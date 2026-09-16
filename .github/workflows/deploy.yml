@@ -1,0 +1,34 @@
+name: Deploy Felslager Backend
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH into server and deploy
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SSH_USERNAME }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          script: |
+            cd ~/felslager
+            
+            # Pull the latest code
+            git pull origin main
+            
+            # Install any new dependencies
+            npm install
+            
+            # Restart the Node server. 
+            # NOTE: Uncomment and adjust the restart command based on what you use!
+            
+            # If using PM2:
+            # pm2 restart index
+            
+            # If using Systemd:
+            # sudo systemctl restart felslager
