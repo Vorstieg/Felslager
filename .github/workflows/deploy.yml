@@ -28,7 +28,4 @@ jobs:
             # NOTE: Uncomment and adjust the restart command based on what you use!
             
             # If using PM2:
-            # pm2 restart index
-            
-            # If using Systemd:
-            # sudo systemctl restart felslager
+            pm2 restart felslager
