@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "",
   "main": "index.js",
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
@@ -14,6 +17,8 @@
     "@gltf-transform/core": "^4.0.0",
     "@gltf-transform/extensions": "^4.0.0",
     "@gltf-transform/functions": "^4.0.0",
+    "@vorstieg/fels-types": "^1.0.0",
+    "ajv": "^8.20.0",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
