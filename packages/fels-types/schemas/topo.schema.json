@@ -1,0 +1,190 @@
+{
+	"$schema": "http://json-schema.org/draft-07/schema#",
+	"$id": "https://schemas.vorstieg.com/fels-data/topo.schema.json",
+	"title": "Fels topo document",
+	"description": "Route metadata and optional 2D/3D topo geometry.",
+	"type": "object",
+	"required": ["routes"],
+	"properties": {
+		"id": { "type": "string" },
+		"description": { "type": "string" },
+		"tags": { "type": "array", "items": { "type": "string" } },
+		"image2D": { "type": ["string", "null"] },
+		"imageAspectRatio": { "type": "number", "exclusiveMinimum": 0 },
+		"date": { "type": "string" },
+		"updated": { "type": "string" },
+		"author": { "type": "string" },
+		"coordinates": {
+			"type": "array",
+			"items": { "type": "number" },
+			"minItems": 3,
+			"maxItems": 3
+		},
+		"routes": { "type": "array", "items": { "$ref": "#/$defs/route" } },
+		"paths": { "$ref": "#/$defs/pathCollection" },
+		"fixPoints": { "type": "array", "items": { "$ref": "#/$defs/fixPoint" } },
+		"lineOverlays": { "type": "array", "items": { "$ref": "#/$defs/lineOverlay" } },
+		"textLabels": { "type": "array", "items": { "$ref": "#/$defs/textLabel" } }
+	},
+	"additionalProperties": true,
+	"$defs": {
+		"point2D": {
+			"type": "array",
+			"items": { "type": "number", "minimum": 0, "maximum": 1 },
+			"minItems": 2,
+			"maxItems": 2
+		},
+		"point3D": {
+			"type": "array",
+			"items": { "type": "number" },
+			"minItems": 3,
+			"maxItems": 3
+		},
+		"path2D": { "type": "array", "items": { "$ref": "#/$defs/point2D" }, "minItems": 2 },
+		"path3D": { "type": "array", "items": { "$ref": "#/$defs/point3D" }, "minItems": 2 },
+		"pathCollection": {
+			"type": "object",
+			"required": ["type", "features"],
+			"properties": {
+				"type": { "const": "FeatureCollection" },
+				"features": { "type": "array", "items": { "$ref": "#/$defs/pathFeature" } }
+			},
+			"additionalProperties": true
+		},
+		"pathFeature": {
+			"type": "object",
+			"required": ["type", "geometry"],
+			"properties": {
+				"type": { "const": "Feature" },
+				"id": { "type": ["string", "number"] },
+				"properties": { "type": "object" },
+				"geometry": {
+					"type": "object",
+					"required": ["type", "coordinates"],
+					"properties": {
+						"type": { "const": "LineString" },
+						"coordinates": {
+							"type": "array",
+							"minItems": 2,
+							"items": { "$ref": "#/$defs/point3D" }
+						}
+					},
+					"additionalProperties": true
+				}
+			},
+			"additionalProperties": true
+		},
+		"grade": {
+			"oneOf": [
+				{
+					"type": "object",
+					"required": ["scale", "value", "standardizedValue"],
+					"properties": {
+						"scale": { "type": "string" },
+						"value": { "type": "string" },
+						"standardizedValue": { "type": "string" }
+					},
+					"additionalProperties": false
+				},
+				{ "type": "null" }
+			]
+		},
+		"pathRef": {
+			"type": "object",
+			"required": ["pathId"],
+			"properties": {
+				"pathId": { "type": ["string", "number"] },
+				"role": { "type": "string" },
+				"label": { "type": "string" }
+			},
+			"additionalProperties": true
+		},
+		"route": {
+			"type": "object",
+			"required": ["id"],
+			"properties": {
+				"id": { "type": ["string", "number"] },
+				"name": { "type": "string" },
+				"type": { "type": "string" },
+				"grade": { "$ref": "#/$defs/grade" },
+				"description": { "type": "string" },
+				"tags": { "type": "array", "items": { "type": "string" } },
+				"points3D": { "$ref": "#/$defs/path3D" },
+				"orientation3D": { "$ref": "#/$defs/point3D" },
+				"boltAmount": { "type": "number", "minimum": 0 },
+				"length": { "type": "number", "minimum": 0 },
+				"lineStyle": { "type": "string" },
+				"points2D": { "$ref": "#/$defs/path2D" },
+				"pitches": { "type": "array", "items": { "$ref": "#/$defs/pitch" } },
+				"variants": { "type": "array", "items": { "$ref": "#/$defs/variant" } },
+				"fixPoints": { "type": "array", "items": { "type": ["string", "number"] } },
+				"assets": { "type": "object" },
+				"pathRefs": { "type": "array", "items": { "$ref": "#/$defs/pathRef" } }
+			},
+			"additionalProperties": true
+		},
+		"pitch": {
+			"type": "object",
+			"required": ["id", "pitchNumber"],
+			"properties": {
+				"id": { "type": ["string", "number"] },
+				"pitchNumber": { "type": "integer", "minimum": 1 },
+				"grade": { "$ref": "#/$defs/grade" },
+				"lineStyle": { "type": "string" },
+				"points2D": { "$ref": "#/$defs/path2D" },
+				"points3D": { "$ref": "#/$defs/path3D" }
+			},
+			"additionalProperties": true
+		},
+		"variant": {
+			"type": "object",
+			"required": ["id"],
+			"properties": {
+				"id": { "type": ["string", "number"] },
+				"points2D": { "$ref": "#/$defs/path2D" },
+				"points3D": { "$ref": "#/$defs/path3D" },
+				"lineStyle": { "type": "string" }
+			},
+			"additionalProperties": true
+		},
+		"fixPoint": {
+			"type": "object",
+			"required": ["id", "type"],
+			"properties": {
+				"id": { "type": ["string", "number"] },
+				"type": { "type": "string" },
+				"position2D": { "$ref": "#/$defs/point2D" },
+				"position3D": { "$ref": "#/$defs/point3D" },
+				"rotation2D": { "type": "number" },
+				"scale2D": { "type": "number" }
+			},
+			"additionalProperties": true
+		},
+		"lineOverlay": {
+			"type": "object",
+			"required": ["id"],
+			"properties": {
+				"id": { "type": ["string", "number"] },
+				"lineStyle": { "enum": ["rock", "approach", "descent", "fixedRope"] },
+				"points2D": { "$ref": "#/$defs/path2D" },
+				"points3D": { "$ref": "#/$defs/path3D" }
+			},
+			"additionalProperties": true
+		},
+		"textLabel": {
+			"type": "object",
+			"required": ["id", "text"],
+			"properties": {
+				"id": { "type": ["string", "number"] },
+				"text": { "type": "string" },
+				"position2D": { "$ref": "#/$defs/point2D" },
+				"position3D": { "$ref": "#/$defs/point3D" },
+				"fontSize2D": { "type": "number" },
+				"color": { "type": "string" },
+				"fontWeight": { "type": ["string", "number"] },
+				"textAlign2D": { "enum": ["left", "center", "right"] }
+			},
+			"additionalProperties": true
+		}
+	}
+}
