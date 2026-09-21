@@ -1,0 +1,82 @@
+{
+	"$schema": "http://json-schema.org/draft-07/schema#",
+	"$id": "https://schemas.vorstieg.com/fels-data/fels.schema.json",
+	"title": "Fels entry",
+	"description": "A Fels entry (crag, sector, area, etc.) stored as a GeoJSON Feature.",
+	"type": "object",
+	"required": ["type", "properties", "geometry"],
+	"properties": {
+		"type": { "const": "Feature" },
+		"properties": { "$ref": "#/$defs/felsProperties" },
+		"geometry": { "$ref": "#/$defs/pointOrAreaGeometry" }
+	},
+	"additionalProperties": true,
+	"$defs": {
+		"position": {
+			"type": "array",
+			"items": [
+				{ "type": "number", "minimum": -180, "maximum": 180 },
+				{ "type": "number", "minimum": -90, "maximum": 90 }
+			],
+			"additionalItems": { "type": "number" },
+			"minItems": 2,
+			"maxItems": 3
+		},
+		"pointOrAreaGeometry": {
+			"oneOf": [
+				{
+					"type": "object",
+					"required": ["type", "coordinates"],
+					"properties": {
+						"type": { "const": "Point" },
+						"coordinates": { "$ref": "#/$defs/position" }
+					},
+					"additionalProperties": false
+				},
+				{
+					"type": "object",
+					"required": ["type", "coordinates"],
+					"properties": {
+						"type": { "const": "Polygon" },
+						"coordinates": {
+							"type": "array",
+							"items": { "type": "array", "items": { "$ref": "#/$defs/position" }, "minItems": 4 }
+						}
+					},
+					"additionalProperties": false
+				},
+				{
+					"type": "object",
+					"required": ["type", "coordinates"],
+					"properties": { "type": { "const": "MultiPolygon" }, "coordinates": { "type": "array" } },
+					"additionalProperties": false
+				}
+			]
+		},
+		"entryKind": {
+			"enum": ["country", "region", "area", "crag", "sector"]
+		},
+		"felsProperties": {
+			"type": "object",
+			"required": ["id", "name", "kind"],
+			"properties": {
+				"id": { "type": "string", "minLength": 1 },
+				"name": { "type": "string", "minLength": 1 },
+				"kind": { "$ref": "#/$defs/entryKind" },
+				"type": { "type": "array", "items": { "type": "string" } },
+				"security": { "type": "string" },
+				"rock_type": { "type": "string" },
+				"description_de": { "type": "string" },
+				"description_en": { "type": "string" },
+				"equipment": { "type": "array" },
+				"assets": { "type": "object" },
+				"tags": { "type": "array", "items": { "type": "string" } },
+				"topo": { "type": "object" },
+				"geometry": { "$ref": "#/$defs/pointOrAreaGeometry" },
+				"date": { "type": "string" },
+				"updated": { "type": "string" }
+			},
+			"additionalProperties": true
+		}
+	}
+}

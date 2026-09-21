@@ -1,0 +1,38 @@
+{
+	"name": "@vorstieg/fels-types",
+	"version": "0.1.2",
+	"description": "Shared schemas and types for Felsstudio and Felsverzeichnis climbing-area data.",
+	"type": "module",
+	"exports": {
+		".": "./src/index.js",
+		"./types": "./types/index.d.ts",
+		"./schemas/fels": "./schemas/fels.schema.json",
+		"./schemas/topo": "./schemas/topo.schema.json"
+	},
+	"files": [
+		"src",
+		"types",
+		"schemas",
+		"examples",
+		"docs",
+		"README.md"
+	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/Vorstieg/Felsstudio.git",
+		"directory": "fels-data"
+	},
+	"publishConfig": {
+		"registry": "https://npm.pkg.github.com"
+	},
+	"scripts": {
+		"build": "node scripts/build-types.mjs",
+		"prepublishOnly": "npm run build",
+		"validate": "node scripts/validate-examples.mjs"
+	},
+	"devDependencies": {
+		"ajv": "^8.17.1",
+		"json-schema-to-typescript": "^13.1.2",
+		"typescript": "^5.0.0"
+	}
+}

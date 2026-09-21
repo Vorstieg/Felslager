@@ -5,7 +5,12 @@ const path = require('path');
 const basicAuth = require('express-basic-auth');
 const crypto = require('crypto');
 const sharp = require('sharp');
+const Ajv = require('ajv');
+const felsSchema = require('@vorstieg/fels-types/schemas/fels');
 require('dotenv').config();
+
+const ajv = new Ajv({ schemas: [felsSchema], strict: false });
+const validateFels = ajv.getSchema('https://schemas.vorstieg.com/fels-data/fels.schema.json');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -236,6 +241,18 @@ app.use('/api/fs', express.raw({ type: '*/*', limit: '500mb' }), async (req, res
                         await fs.promises.writeFile(targetPath, req.body);
                     }
                 } else if (typeof req.body === 'object' && Object.keys(req.body).length > 0) {
+                    const ext = path.extname(targetPath).toLowerCase();
+                    if (ext === '.json') {
+                        const fileSlug = path.basename(targetPath, '.json');
+                        const dirSlug = path.basename(path.dirname(targetPath));
+                        
+                        if (fileSlug === dirSlug) {
+                            const valid = validateFels(req.body);
+                            if (!valid) {
+                                return res.status(400).json({ error: 'Invalid JSON schema', details: validateFels.errors });
+                            }
+                        }
+                    }
                     await fs.promises.writeFile(targetPath, JSON.stringify(req.body, null, 2));
                 } else {
                     return res.status(400).send('No content provided');
