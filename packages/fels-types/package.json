@@ -13,25 +13,22 @@
 		"src",
 		"types",
 		"schemas",
-		"examples",
 		"docs",
 		"README.md"
 	],
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/Vorstieg/Felsstudio.git",
-		"directory": "fels-data"
+		"url": "git+https://github.com/Vorstieg/Felslager.git",
+		"directory": "packages/fels-types"
 	},
 	"publishConfig": {
 		"registry": "https://npm.pkg.github.com"
 	},
 	"scripts": {
 		"build": "node scripts/build-types.mjs",
-		"prepublishOnly": "npm run build",
-		"validate": "node scripts/validate-examples.mjs"
+		"prepublishOnly": "npm run build"
 	},
 	"devDependencies": {
-		"ajv": "^8.17.1",
 		"json-schema-to-typescript": "^13.1.2",
 		"typescript": "^5.0.0"
 	}
