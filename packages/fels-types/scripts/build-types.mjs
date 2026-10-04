@@ -6,11 +6,6 @@ async function generate() {
   console.log('Generating types from schemas...');
   
   let types = `// Auto-generated types from JSON schemas
-export type Position = [longitude: number, latitude: number, elevation?: number];
-export type Point2D = [x: number, y: number];
-export type Point3D = [x: number, y: number, z: number];
-export type Path2D = Point2D[];
-export type Path3D = Point3D[];
 export interface GeoJSONGeometry {
 	type: 'Point' | 'Polygon' | 'MultiPolygon';
 	coordinates: unknown;

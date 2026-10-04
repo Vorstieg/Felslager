@@ -5,11 +5,8 @@
  * Actions performed:
  * 1. Strips out deprecated `crag_id`, `sector_id`, `editorMode`, `rock`, and `path` properties.
  * 2. Merges the standalone `altitude` into the 3rd slot of the `coordinates` array.
- * 3. Renames the `outlines` array to `lineOverlays`.
- * 4. Iterates through `lineOverlays` and deletes `lineStyle: "variant"` (fallback to default).
- * 5. Iterates through `routes` and renames `points`/`orientation` to `points3D`/`orientation3D`.
- * 6. Iterates through `pitches` and strips the redundant `type: "pitch"` discriminator.
- * 7. Iterates through `fixPoints` and renames `position` to `position3D`.
+ * 3. Renames route 3D fields and removes the redundant pitch discriminator.
+ * 4. Renames `fixPoints[].position` to `position3D`.
  */
 const fs = require('fs');
 const path = require('path');
@@ -54,23 +51,7 @@ function migrateTopo(topo) {
         }
     }
 
-    // 3. Rename outlines to lineOverlays and fix 'variant' lineStyle
-    if (topo.outlines !== undefined) {
-        topo.lineOverlays = topo.outlines;
-        delete topo.outlines;
-        modified = true;
-    }
-    if (Array.isArray(topo.lineOverlays)) {
-        for (const overlay of topo.lineOverlays) {
-            if (overlay.lineStyle === 'variant') {
-                // Fallback to default styling since variant is now strictly for routes
-                delete overlay.lineStyle; 
-                modified = true;
-            }
-        }
-    }
-
-    // 4. Rename route 3D properties and clean up pitches
+    // 3. Rename route 3D properties and clean up pitches
     if (Array.isArray(topo.routes)) {
         for (const route of topo.routes) {
             if (route.points !== undefined) {
@@ -94,7 +75,7 @@ function migrateTopo(topo) {
         }
     }
 
-    // 5. Rename fixPoint 3D properties
+    // 4. Rename fixPoint 3D properties
     if (Array.isArray(topo.fixPoints)) {
         for (const fp of topo.fixPoints) {
             if (fp.position !== undefined) {
