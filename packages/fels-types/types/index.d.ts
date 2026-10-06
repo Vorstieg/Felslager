@@ -15,7 +15,7 @@ export type PointOrAreaGeometry =
       }
     | {
           type: 'MultiPolygon';
-          coordinates: unknown[];
+          coordinates: [Position, Position, Position, Position, ...Position[]][][];
       };
 /**
  * @minItems 2
@@ -41,10 +41,20 @@ export interface FelsProperties {
     rock_type?: string;
     description_de?: string;
     description_en?: string;
-    equipment?: unknown[];
+    equipment?: {
+        name: string;
+        type?: string;
+        amount?: number;
+        sizes?: string;
+        optional?: boolean;
+        [k: string]: unknown;
+    }[];
     assets?: {};
     tags?: string[];
-    topo?: {};
+    topo?: {
+        link?: string;
+        [k: string]: unknown;
+    };
     geometry?: PointOrAreaGeometry;
     date?: string;
     updated?: string;
@@ -55,7 +65,7 @@ export type Route = ClimbingLine & {
     type?: string;
     description?: string;
     tags?: string[];
-    orientation3D?: Point3D;
+    orientation?: Point3D;
     boltAmount?: number;
     pitches?: Pitch[];
     variants?: Variant[];
@@ -105,6 +115,10 @@ export interface FelsTopoDocument {
     tags?: string[];
     image2D?: string | null;
     backgroundFit?: 'contain' | 'cover';
+    /**
+     * Clockwise wall heading in degrees from north; applied to model-local orientation vectors.
+     */
+    wallAzimuth?: number;
     imageAspectRatio?: number;
     date?: string;
     updated?: string;
@@ -129,7 +143,7 @@ export interface ClimbingLine {
     curve?: Curve;
     labelOffset2D?: Point2D;
     points2D?: Path2D;
-    points3D?: Path3D;
+    points?: Path3D;
     [k: string]: unknown;
 }
 export interface Curve {
@@ -151,7 +165,13 @@ export interface PathCollection {
 export interface PathFeature {
     type: 'Feature';
     id?: string | number;
-    properties?: {};
+    properties?: {
+        name?: string;
+        role?: string;
+        label?: string;
+        routeType?: string;
+        [k: string]: unknown;
+    };
     geometry: {
         type: 'LineString';
         /**
@@ -166,7 +186,7 @@ export interface FixPoint {
     id: string | number;
     type: string;
     position2D?: Point2D;
-    position3D?: Point3D;
+    position?: Point3D;
     rotation2D?: number;
     scale2D?: number;
     scaleX2D?: number;
@@ -200,7 +220,8 @@ export interface TextLabel {
     id: string | number;
     text: string;
     position2D?: Point2D;
-    position3D?: Point3D;
+    position?: Point3D;
+    rotation2D?: number;
     fontSize2D?: number;
     color?: string;
     fontWeight?: string | number;
