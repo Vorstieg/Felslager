@@ -66,7 +66,7 @@ The `properties` object contains the entry's metadata.
 This is a custom JSON document that contains a `routes` array and optional 2D drawing layers, 3D route geometry, or both.
 
 - `routes`: route metadata and geometry.
-- Routes, pitches, and variants share the `climbingLine` schema (`ClimbingLine` in TypeScript): `id`, `grade`, `length`, `lineStyle`, `curve`, `labelOffset2D`, `points2D`, and `points`.
+- Routes, pitches, and variants share the `climbingLine` schema (`ClimbingLine` in TypeScript): `id`, `grade`, `length`, `lineStyle`, `curve`, `labelOffset2D`, `points2D`, and `points3D`.
 - `paths`: shared GeoJSON LineString feature collection. Stored once even when several routes use it.
 - `routes[].pathRefs`: references to paths in the same document. Each reference stores the route-specific `role` and optional `label`.
 - `pitches`: multi-pitch route segments, ordered from bottom to top.
@@ -80,9 +80,9 @@ This is a custom JSON document that contains a `routes` array and optional 2D dr
 Topo documents natively support both 2D and 3D coordinates simultaneously:
 
 - `routes[].points2D`, `pitches[].points2D`, `outlines[].points2D`: Normalized `[x, y]` coordinates mapping to the unit square (0 to 1).
-- `routes[].points`, `pitches[].points`: Local `[x, y, z]` 3D coordinates relative to a 3D model.
-- `routes[].orientation`: A route orientation vector.
-- `fixPoints[].position2D` and `fixPoints[].position`: 2D and 3D symbol coordinates.
+- `routes[].points3D`, `pitches[].points3D`: Local `[x, y, z]` 3D coordinates relative to a 3D model.
+- `routes[].orientation3D`: A route orientation vector.
+- `fixPoints[].position2D` and `fixPoints[].position3D`: 2D and 3D symbol coordinates.
 - `coordinates`: A strict 3-element GeoJSON position array `[longitude, latitude, elevation]` for the geographic location of the topo itself.
 
 ```json
@@ -103,7 +103,7 @@ Topo documents natively support both 2D and 3D coordinates simultaneously:
 				[0.28, 0.55],
 				[0.32, 0.2]
 			],
-			"points": [
+			"points3D": [
 				[12.4, 3.2, -1.0],
 				[12.5, 8.1, -1.1]
 			]
@@ -114,7 +114,7 @@ Topo documents natively support both 2D and 3D coordinates simultaneously:
 			"id": "symbol-1",
 			"type": "bolt",
 			"position2D": [0.32, 0.2],
-			"position": [12.4, 3.2, -1.0]
+			"position3D": [12.4, 3.2, -1.0]
 		}
 	],
 	"outlines": [

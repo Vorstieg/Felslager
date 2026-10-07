@@ -65,7 +65,7 @@ export type Route = ClimbingLine & {
     type?: string;
     description?: string;
     tags?: string[];
-    orientation?: Point3D;
+    orientation3D?: Point3D;
     boltAmount?: number;
     pitches?: Pitch[];
     variants?: Variant[];
@@ -115,10 +115,7 @@ export interface FelsTopoDocument {
     tags?: string[];
     image2D?: string | null;
     backgroundFit?: 'contain' | 'cover';
-    /**
-     * Clockwise wall heading in degrees from north; applied to model-local orientation vectors.
-     */
-    wallAzimuth?: number;
+
     imageAspectRatio?: number;
     date?: string;
     updated?: string;
@@ -143,7 +140,7 @@ export interface ClimbingLine {
     curve?: Curve;
     labelOffset2D?: Point2D;
     points2D?: Path2D;
-    points?: Path3D;
+    points3D?: Path3D;
     [k: string]: unknown;
 }
 export interface Curve {
@@ -186,7 +183,7 @@ export interface FixPoint {
     id: string | number;
     type: string;
     position2D?: Point2D;
-    position?: Point3D;
+    position3D?: Point3D;
     rotation2D?: number;
     scale2D?: number;
     scaleX2D?: number;
@@ -220,7 +217,7 @@ export interface TextLabel {
     id: string | number;
     text: string;
     position2D?: Point2D;
-    position?: Point3D;
+    position3D?: Point3D;
     rotation2D?: number;
     fontSize2D?: number;
     color?: string;

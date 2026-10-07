@@ -12,7 +12,6 @@
 		"tags": { "type": "array", "items": { "type": "string" } },
 		"image2D": { "type": ["string", "null"] },
 		"backgroundFit": { "enum": ["contain", "cover"] },
-		"wallAzimuth": { "type": "number", "description": "Clockwise wall heading in degrees from north; applied to model-local orientation vectors." },
 		"imageAspectRatio": { "type": "number", "exclusiveMinimum": 0 },
 		"date": { "type": "string" },
 		"updated": { "type": "string" },
@@ -130,7 +129,7 @@
 				"curve": { "$ref": "#/$defs/curve" },
 				"labelOffset2D": { "$ref": "#/$defs/point2D" },
 				"points2D": { "$ref": "#/$defs/path2D" },
-				"points": { "$ref": "#/$defs/path3D" }
+				"points3D": { "$ref": "#/$defs/path3D" }
 			},
 			"additionalProperties": true
 		},
@@ -144,7 +143,7 @@
 						"type": { "type": "string" },
 						"description": { "type": "string" },
 						"tags": { "type": "array", "items": { "type": "string" } },
-						"orientation": { "$ref": "#/$defs/point3D" },
+						"orientation3D": { "$ref": "#/$defs/point3D" },
 						"boltAmount": { "type": "number", "minimum": 0 },
 						"pitches": { "type": "array", "items": { "$ref": "#/$defs/pitch" } },
 						"variants": { "type": "array", "items": { "$ref": "#/$defs/variant" } },
@@ -188,7 +187,7 @@
 				"id": { "type": ["string", "number"] },
 				"type": { "type": "string" },
 				"position2D": { "$ref": "#/$defs/point2D" },
-				"position": { "$ref": "#/$defs/point3D" },
+				"position3D": { "$ref": "#/$defs/point3D" },
 				"rotation2D": { "type": "number" },
 				"scale2D": { "type": "number" },
 				"scaleX2D": { "type": "number" },
@@ -234,7 +233,7 @@
 				"id": { "type": ["string", "number"] },
 				"text": { "type": "string" },
 				"position2D": { "$ref": "#/$defs/point2D" },
-				"position": { "$ref": "#/$defs/point3D" },
+				"position3D": { "$ref": "#/$defs/point3D" },
 				"rotation2D": { "type": "number" },
 				"fontSize2D": { "type": "number" },
 				"color": { "type": "string" },
