@@ -15,7 +15,7 @@ export type PointOrAreaGeometry =
       }
     | {
           type: 'MultiPolygon';
-          coordinates: unknown[];
+          coordinates: [Position, Position, Position, Position, ...Position[]][][];
       };
 /**
  * @minItems 2
@@ -41,10 +41,20 @@ export interface FelsProperties {
     rock_type?: string;
     description_de?: string;
     description_en?: string;
-    equipment?: unknown[];
+    equipment?: {
+        name: string;
+        type?: string;
+        amount?: number;
+        sizes?: string;
+        optional?: boolean;
+        [k: string]: unknown;
+    }[];
     assets?: {};
     tags?: string[];
-    topo?: {};
+    topo?: {
+        link?: string;
+        [k: string]: unknown;
+    };
     geometry?: PointOrAreaGeometry;
     date?: string;
     updated?: string;
@@ -105,6 +115,7 @@ export interface FelsTopoDocument {
     tags?: string[];
     image2D?: string | null;
     backgroundFit?: 'contain' | 'cover';
+
     imageAspectRatio?: number;
     date?: string;
     updated?: string;
@@ -151,7 +162,13 @@ export interface PathCollection {
 export interface PathFeature {
     type: 'Feature';
     id?: string | number;
-    properties?: {};
+    properties?: {
+        name?: string;
+        role?: string;
+        label?: string;
+        routeType?: string;
+        [k: string]: unknown;
+    };
     geometry: {
         type: 'LineString';
         /**
@@ -201,6 +218,7 @@ export interface TextLabel {
     text: string;
     position2D?: Point2D;
     position3D?: Point3D;
+    rotation2D?: number;
     fontSize2D?: number;
     color?: string;
     fontWeight?: string | number;

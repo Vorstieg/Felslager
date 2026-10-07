@@ -59,7 +59,16 @@
 			"properties": {
 				"type": { "const": "Feature" },
 				"id": { "type": ["string", "number"] },
-				"properties": { "type": "object" },
+				"properties": {
+					"type": "object",
+					"properties": {
+						"name": { "type": "string" },
+						"role": { "type": "string" },
+						"label": { "type": "string" },
+						"routeType": { "type": "string" }
+					},
+					"additionalProperties": true
+				},
 				"geometry": {
 					"type": "object",
 					"required": ["type", "coordinates"],
@@ -225,6 +234,7 @@
 				"text": { "type": "string" },
 				"position2D": { "$ref": "#/$defs/point2D" },
 				"position3D": { "$ref": "#/$defs/point3D" },
+				"rotation2D": { "type": "number" },
 				"fontSize2D": { "type": "number" },
 				"color": { "type": "string" },
 				"fontWeight": { "type": ["string", "number"] },

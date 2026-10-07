@@ -48,7 +48,16 @@
 				{
 					"type": "object",
 					"required": ["type", "coordinates"],
-					"properties": { "type": { "const": "MultiPolygon" }, "coordinates": { "type": "array" } },
+					"properties": {
+						"type": { "const": "MultiPolygon" },
+						"coordinates": {
+							"type": "array",
+							"items": {
+								"type": "array",
+								"items": { "type": "array", "items": { "$ref": "#/$defs/position" }, "minItems": 4 }
+							}
+						}
+					},
 					"additionalProperties": false
 				}
 			]
@@ -68,10 +77,28 @@
 				"rock_type": { "type": "string" },
 				"description_de": { "type": "string" },
 				"description_en": { "type": "string" },
-				"equipment": { "type": "array" },
+				"equipment": {
+					"type": "array",
+					"items": {
+						"type": "object",
+						"required": ["name"],
+						"properties": {
+							"name": { "type": "string" },
+							"type": { "type": "string" },
+							"amount": { "type": "number" },
+							"sizes": { "type": "string" },
+							"optional": { "type": "boolean" }
+						},
+						"additionalProperties": true
+					}
+				},
 				"assets": { "type": "object" },
 				"tags": { "type": "array", "items": { "type": "string" } },
-				"topo": { "type": "object" },
+				"topo": {
+					"type": "object",
+					"properties": { "link": { "type": "string" } },
+					"additionalProperties": true
+				},
 				"geometry": { "$ref": "#/$defs/pointOrAreaGeometry" },
 				"date": { "type": "string" },
 				"updated": { "type": "string" }
