@@ -13,6 +13,7 @@ export function loadConfig(env = process.env) {
       env.DATA_DIR || fileURLToPath(new URL("./data", import.meta.url)),
     ),
     databasePath: env.AUTH_DATABASE_PATH,
+    reviewDir: env.REVIEW_DIR ? path.resolve(env.REVIEW_DIR) : undefined,
     secret: env.BETTER_AUTH_SECRET,
     baseURL: env.BETTER_AUTH_URL || "https://lager.felsverzeichnis.at/api/auth",
     studioURL,

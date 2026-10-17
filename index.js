@@ -11,6 +11,7 @@ import { promisify } from 'node:util';
 import { toNodeHandler, fromNodeHeaders } from 'better-auth/node';
 import { createAuth } from './auth.js';
 import { loadConfig } from './config.js';
+import { createReviewRouter } from './reviews.js';
 import 'dotenv/config';
 
 const require = createRequire(import.meta.url);
@@ -197,6 +198,7 @@ export function createApp(config, { optimizeGlb } = {}) {
         next();
     });
     app.all('/api/auth/{*path}', toNodeHandler(auth));
+    app.use('/api/reviews', createReviewRouter(config, auth));
     const DATA_DIR = fs.realpathSync(config.dataDir);
     const contained = (p) => p === DATA_DIR || p.startsWith(DATA_DIR + path.sep);
     async function safe(raw, forbidRoot = false) {
