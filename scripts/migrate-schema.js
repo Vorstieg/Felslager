@@ -8,9 +8,11 @@
  * 3. Renames route 3D fields and removes the redundant pitch discriminator.
  * 4. Renames `fixPoints[].position` to `position3D`.
  */
-const fs = require('fs');
-const path = require('path');
-require('dotenv').config();
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import 'dotenv/config';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '../data');
 
