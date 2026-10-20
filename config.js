@@ -14,6 +14,12 @@ export function loadConfig(env = process.env) {
     ),
     databasePath: env.AUTH_DATABASE_PATH,
     reviewDir: env.REVIEW_DIR ? path.resolve(env.REVIEW_DIR) : undefined,
+    processingDir: env.PROCESSING_DIR ? path.resolve(env.PROCESSING_DIR) : undefined,
+    captureDir: env.CAPTURE_DIR ? path.resolve(env.CAPTURE_DIR) : undefined,
+    captureMaxFileBytes: Number(env.CAPTURE_MAX_FILE_BYTES || 20 * 1024 ** 3),
+    captureMaxDatasetBytes: Number(env.CAPTURE_MAX_DATASET_BYTES || 100 * 1024 ** 3),
+    boltWorkerToken: env.BOLT_WORKER_TOKEN || '',
+    boltWorkerLeaseMs: Number(env.BOLT_WORKER_LEASE_SECONDS || 300) * 1000,
     secret: env.BETTER_AUTH_SECRET,
     baseURL: env.BETTER_AUTH_URL || "https://lager.felsverzeichnis.at/api/auth",
     studioURL,
@@ -26,6 +32,14 @@ export function loadConfig(env = process.env) {
   return config;
 }
 export function validateConfig(c) {
+  if (c.captureMaxFileBytes !== undefined && (!Number.isSafeInteger(c.captureMaxFileBytes) || c.captureMaxFileBytes < 1))
+    throw new Error("CAPTURE_MAX_FILE_BYTES must be a positive safe integer");
+  if (c.captureMaxDatasetBytes !== undefined &&
+      (!Number.isSafeInteger(c.captureMaxDatasetBytes) || c.captureMaxDatasetBytes < 1))
+    throw new Error("CAPTURE_MAX_DATASET_BYTES must be a positive safe integer");
+  if (c.boltWorkerLeaseMs !== undefined &&
+      (!Number.isSafeInteger(c.boltWorkerLeaseMs) || c.boltWorkerLeaseMs < 1000))
+    throw new Error("BOLT_WORKER_LEASE_SECONDS must be at least one second");
   if (!c.secret || c.secret.length < 32)
     throw new Error("BETTER_AUTH_SECRET must contain at least 32 characters");
   if (

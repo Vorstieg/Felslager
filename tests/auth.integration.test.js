@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createServer, request as httpRequest } from "node:http";
-import { mkdtemp, mkdir, writeFile, readFile, symlink, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, readdir, symlink, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createUser } from "../auth.js";
 import { createApp } from "../index.js";
+import { Document, NodeIO } from '@gltf-transform/core';
 
 const password = "Correct horse battery staple!";
 const origin = "http://localhost:5173";
@@ -28,6 +29,7 @@ async function fixture(t) {
     trustedOrigins: [origin],
     production: false,
     trustProxy: false,
+    boltWorkerToken: "integration-worker-secret",
   };
   const dependencies = {
     optimizeGlb: async (...args) => {
@@ -130,6 +132,122 @@ test("public reads remain anonymous and shared Basic credentials cannot write", 
       "AUTH_REQUIRED",
     );
   }
+});
+
+test("capture uploads require a session and trusted Origin, without sealing or a published entry", async (t) => {
+  const f = await fixture(t);
+  const editor = await f.seed();
+  await expectCode(await f.request('/api/captures'), 401, 'AUTH_REQUIRED');
+  await expectCode(await f.request('/api/captures', { method: 'POST', cookie: editor.cookie,
+    headers: { Origin: 'https://attacker.example' }, body: { name: 'Survey', entryPath: 'wall' } }), 403, 'ORIGIN_NOT_ALLOWED');
+  const response = await f.request('/api/captures', { method: 'POST', cookie: editor.cookie,
+    body: { name: 'Survey', entryPath: 'region/wall' } });
+  assert.equal(response.status, 201);
+  const capture = await response.json();
+  for (const name of ['a.jpg', 'b.jpg', 'flight.mp4', 'flight.srt']) {
+    assert.equal((await f.request(`/api/captures/${capture.id}/files?path=${name}`, { method: 'PUT', cookie: editor.cookie,
+      headers: { 'Content-Type': 'application/octet-stream' }, rawBody: Buffer.from('original') })).status, 201);
+  }
+  await expectCode(await f.request(`/api/captures/${capture.id}/files?path=a.jpg`), 401, 'AUTH_REQUIRED');
+  assert.equal((await f.request(`/api/fs/region/wall/.sources/${capture.id}/images/a.jpg`)).status, 403);
+  assert.equal((await f.request(`/api/captures/${capture.id}/complete`, { method: 'POST', cookie: editor.cookie })).status, 404);
+  const job = await f.request('/api/processing', { method: 'POST', cookie: editor.cookie,
+    body: { captureId: capture.id, runBoltDetection: false } });
+  assert.equal(job.status, 202);
+  assert.equal((await job.json()).captureId, capture.id);
+  await expectCode(await f.request(`/api/captures/${capture.id}`, { method: 'DELETE', cookie: editor.cookie }), 409, 'CAPTURE_IN_USE');
+  // Capture ownership does not block Studio's ordinary filesystem writes.
+  const entry = { type: 'Feature', properties: { id: 'wall', name: 'Wall', kind: 'crag' }, geometry: { type: 'Point', coordinates: [16, 48] } };
+  assert.equal((await f.request('/api/fs/region/wall/wall.json', { method: 'PUT', cookie: editor.cookie, body: entry })).status, 200);
+  assert.equal((await f.request('/api/entries?entryPath=region/wall', { cookie: editor.cookie })).status, 404);
+  assert.equal((await f.request('/api/entries/publish', { method: 'POST', cookie: editor.cookie, body: {} })).status, 404);
+});
+
+test("separate reconstruction and detection services return private results for Studio publication", async (t) => {
+  const f = await fixture(t);
+  const editor = await f.seed();
+  await expectCode(await f.request("/api/processing", {
+    method: "POST", body: { engine: "meshroom" },
+  }), 401, "AUTH_REQUIRED");
+  const sourceResponse = await f.request('/api/captures', { method: 'POST', cookie: editor.cookie,
+    body: { name: 'Survey', entryPath: 'models' } });
+  assert.equal(sourceResponse.status, 201, await sourceResponse.clone().text());
+  const source = await sourceResponse.json();
+  for (const name of ['a.jpg', 'b.jpg']) {
+    const uploaded = await f.request(`/api/captures/${source.id}/files?path=${name}`, {
+      method: 'PUT', cookie: editor.cookie,
+      headers: { 'Content-Type': 'application/octet-stream' }, rawBody: Buffer.from('image'),
+    });
+    assert.equal(uploaded.status, 201);
+  }
+  const created = await f.request('/api/processing', { method: 'POST', cookie: editor.cookie,
+    body: { captureId: source.id, engine: 'meshroom', name: 'Test wall' } });
+  assert.equal(created.status, 202);
+  const job = await created.json();
+  const worker = (route, { lease, method = "GET" } = {}) => fetch(`${f.baseURL}/api/processing/worker${route}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${f.config.boltWorkerToken}`,
+      ...(lease ? { "X-Worker-Lease": lease } : {}),
+    },
+  });
+  assert.equal((await worker("/next?role=reconstruction&engine=odm")).status, 204);
+  const reconstruction = await (await worker("/next?role=reconstruction&engine=meshroom")).json();
+  assert.equal(reconstruction.id, job.id);
+  assert.equal(reconstruction.phase, "reconstruction");
+  await mkdir(reconstruction.workPath, { recursive: true });
+  await writeFile(path.join(reconstruction.workPath, "model.glb"), "reconstructed model");
+  await writeFile(path.join(reconstruction.workPath, "cameras.json"), JSON.stringify({ cameras: {}, shots: {} }));
+  await writeFile(path.join(reconstruction.workPath, "artifact.json"), JSON.stringify({
+    version: 1, engine: "meshroom", model: "model.glb", detectionMesh: "model.glb",
+    reconstruction: "cameras.json", coordinateSystem: "Y_UP", names: { "a.jpg": "image_000000.jpg", "b.jpg": "image_000001.jpg" },
+  }));
+  const handedOff = await worker(`/${job.id}/reconstructed`, { method: "POST", lease: reconstruction.leaseToken });
+  assert.equal(handedOff.status, 200, await handedOff.clone().text());
+  assert.equal((await handedOff.json()).phase, "detection");
+  const detection = await (await worker("/next?role=detection")).json();
+  assert.equal(detection.id, job.id);
+  assert.equal(detection.phase, "detection");
+  assert.ok(!detection.outputAbsolutePath.startsWith(f.dataDir + path.sep));
+  const publicPath = `/api/fs/${detection.entryPath}`;
+  assert.equal((await f.request(`${publicPath}/model.glb`)).status, 404);
+  await mkdir(detection.outputAbsolutePath, { recursive: true });
+  const modelDocument = new Document(), modelBuffer = modelDocument.createBuffer();
+  const positions = modelDocument.createAccessor().setType('VEC3').setBuffer(modelBuffer)
+    .setArray(new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]));
+  modelDocument.createScene().addChild(modelDocument.createNode().setMesh(modelDocument.createMesh()
+    .addPrimitive(modelDocument.createPrimitive().setAttribute('POSITION', positions))));
+  const modelBytes = Buffer.from(await new NodeIO().writeBinary(modelDocument));
+  await writeFile(path.join(detection.outputAbsolutePath, "model.glb"), modelBytes);
+  await writeFile(path.join(detection.outputAbsolutePath, "project.json"), JSON.stringify({ name: "Test wall", hits: [], cameras: {}, coordinateSystem: "Y_UP" }));
+  await expectCode(await worker(`/${job.id}/complete`, { method: "POST", lease: reconstruction.leaseToken }), 409, "STALE_WORKER_LEASE");
+  const completed = await worker(`/${job.id}/complete`, { method: "POST", lease: detection.leaseToken });
+  assert.equal(completed.status, 200, await completed.clone().text());
+  assert.equal((await completed.json()).status, "completed");
+  assert.equal((await f.request(`${publicPath}/model.glb`)).status, 404);
+  const result = await f.request(`/api/processing/${job.id}/results`, { cookie: editor.cookie });
+  assert.equal(result.status, 200);
+  const resultManifest = await result.json();
+  assert.equal(resultManifest.processingId, job.id);
+  assert.ok(resultManifest.files.some((file) => file.path === 'model.glb'));
+  const fileUrl = `/api/processing/${job.id}/results/files?path=model.glb`;
+  await expectCode(await f.request(fileUrl), 401, 'AUTH_REQUIRED');
+  assert.deepEqual(Buffer.from(await (await f.request(fileUrl, { cookie: editor.cookie })).arrayBuffer()), modelBytes);
+  assert.equal((await f.request(fileUrl, { method: 'PUT', cookie: editor.cookie,
+    headers: { 'Content-Type': 'application/octet-stream' }, rawBody: 'edit' })).status, 404);
+  // Studio owns the edited bundle and publishes with ordinary filesystem writes.
+  const published = await f.request(`${publicPath}/model.glb`, { method: 'PUT', cookie: editor.cookie,
+    headers: { 'Content-Type': 'application/octet-stream' }, rawBody: modelBytes });
+  assert.equal(published.status, 200);
+  assert.equal((await f.request(`${publicPath}/models.json`, { method: 'PUT', cookie: editor.cookie,
+    body: { type: 'Feature', properties: { id: 'models', name: 'Models', kind: 'sector' },
+      geometry: { type: 'Point', coordinates: [16, 48] } } })).status, 200);
+  assert.deepEqual(Buffer.from(await (await f.request(`${publicPath}/model.glb`)).arrayBuffer()), modelBytes);
+  const manifest = await (await f.request('/api/fs/manifest.json')).json();
+  assert.equal(manifest[0].path, 'models');
+  assert.match(manifest[0].hash, /^[a-f0-9]{64}$/);
+  const listing = await (await f.request('/api/fs?recursive=true')).json();
+  assert.ok(listing.every((entry) => !entry.path.startsWith('.')));
 });
 
 test("uploaded documents are sandboxed while public assets remain readable", async (t) => {
@@ -526,6 +644,16 @@ test("JSON validation, image processing, GLB processing and hashes remain functi
     headers: { "Content-Type": "model/gltf-binary" },
   });
   assert.equal(model.status, 200);
+  const firstDownload = await f.request('/api/fs/assets/model.glb');
+  assert.equal(firstDownload.headers.get('cache-control'), 'public, no-cache');
+  const etag = firstDownload.headers.get('etag');
+  assert.ok(etag);
+  await writeFile(path.join(f.dataDir, 'assets/model.glb'), 'updated model material data');
+  const updatedDownload = await f.request('/api/fs/assets/model.glb', {
+    headers: { 'If-None-Match': etag }
+  });
+  assert.equal(updatedDownload.status, 200);
+  assert.equal(await updatedDownload.text(), 'updated model material data');
   assert.equal(f.optimized.length, 1);
   assert.match(
     await readFile(path.join(f.dataDir, "assets/hash.txt"), "utf8"),
@@ -538,4 +666,47 @@ test("JSON validation, image processing, GLB processing and hashes remain functi
   assert.ok(
     manifest.some((entry) => entry.id === "crag" && entry.name === "Test Crag"),
   );
+});
+
+test('an active capture upload does not block unrelated content writes', async (t) => {
+  const f = await fixture(t), editor = await f.seed();
+  const capture = await (await f.request('/api/captures', { method: 'POST', cookie: editor.cookie,
+    body: { name: 'Slow survey', entryPath: 'wall' } })).json();
+  const directory = path.join(path.dirname(f.config.databasePath), 'captures', 'wall', `Slow survey--${capture.id}`);
+  let request;
+  const uploading = new Promise((resolve, reject) => {
+    request = httpRequest(`${f.baseURL}/api/captures/${capture.id}/files?path=video.mp4`, {
+      method: 'PUT', headers: { Origin: origin, Cookie: editor.cookie,
+        'Content-Type': 'application/octet-stream', 'Content-Length': '10' },
+    }, (response) => { response.resume(); response.on('end', () => resolve(response.statusCode)); });
+    request.on('error', reject);
+    request.write('first');
+  });
+  try {
+    let started = false;
+    for (let attempts = 0; attempts < 100; attempts++) {
+      if ((await readdir(directory)).some((name) => name.endsWith('.upload'))) { started = true; break; }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.ok(started, 'capture upload is streaming');
+    const written = await f.request('/api/fs/unrelated.txt', { method: 'PUT', cookie: editor.cookie,
+      headers: { 'Content-Type': 'application/octet-stream' }, rawBody: 'published', signal: AbortSignal.timeout(2000) });
+    assert.equal(written.status, 200);
+    assert.equal(await readFile(path.join(f.dataDir, 'unrelated.txt'), 'utf8'), 'published');
+  } finally { request.end('last!'); await uploading; }
+});
+
+test('only capture and processing routes expose the new pipeline', async (t) => {
+  const f = await fixture(t), editor = await f.seed();
+  for (const route of ['/api/sources', '/api/bolt-jobs', '/api/entries']) {
+    assert.equal((await f.request(route, { cookie: editor.cookie })).status, 404);
+  }
+  const capture = await (await f.request('/api/captures', { method: 'POST', cookie: editor.cookie,
+    body: { name: 'Survey', entryPath: 'wall' } })).json();
+  assert.equal((await f.request(`/api/captures/${capture.id}/complete`, { method: 'POST', cookie: editor.cookie })).status, 404);
+  const job = await (await f.request('/api/processing', { method: 'POST', cookie: editor.cookie,
+    body: { captureId: capture.id } })).json();
+  assert.equal(job.status, 'queued');
+  await expectCode(await f.request('/api/processing', { method: 'POST', cookie: editor.cookie,
+    body: { sourceId: capture.id } }), 400, 'CAPTURE_REQUIRED');
 });

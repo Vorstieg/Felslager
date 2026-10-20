@@ -12,6 +12,9 @@ import { toNodeHandler, fromNodeHeaders } from 'better-auth/node';
 import { createAuth } from './auth.js';
 import { loadConfig } from './config.js';
 import { createReviewRouter } from './reviews.js';
+import { createProcessingRouter } from './processing.js';
+import { createCaptureLibrary, createCapturesRouter } from './capture-library.js';
+import { createProcessingResults } from './processing-results.js';
 import 'dotenv/config';
 
 const require = createRequire(import.meta.url);
@@ -70,7 +73,7 @@ async function generateMissingHashes(DATA_DIR) {
         
         // Recurse into subdirectories
         for (const entry of entries) {
-            if (entry.isSymbolicLink()) continue;
+            if (entry.isSymbolicLink() || entry.name.startsWith('.')) continue;
             if (entry.isDirectory()) {
                 await scan(path.join(dir, entry.name));
             }
@@ -171,11 +174,11 @@ export function createApp(config, { optimizeGlb } = {}) {
         const publicRead = req.path.startsWith('/api/fs') && ['GET', 'HEAD'].includes(req.method);
         const origin = req.headers.origin;
         res.vary('Origin');
-        if (publicRead) res.setHeader('Access-Control-Allow-Origin', '*');
-        else if (config.trustedOrigins.includes(origin)) {
+        if (config.trustedOrigins.includes(origin)) {
             res.setHeader('Access-Control-Allow-Origin', origin);
             res.setHeader('Access-Control-Allow-Credentials', 'true');
-        }
+            res.setHeader('Access-Control-Expose-Headers', 'ETag');
+        } else if (publicRead) res.setHeader('Access-Control-Allow-Origin', '*');
         if (req.method === 'OPTIONS') {
             if (!config.trustedOrigins.includes(origin))
                 return res.status(403).json({ code: 'ORIGIN_NOT_ALLOWED' });
@@ -183,7 +186,7 @@ export function createApp(config, { optimizeGlb } = {}) {
             res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Destination,Accept');
             return res.sendStatus(204);
         }
-        if (!['GET', 'HEAD'].includes(req.method) && !config.trustedOrigins.includes(origin))
+        if (!['GET', 'HEAD'].includes(req.method) && !config.trustedOrigins.includes(origin) && !req.path.startsWith('/api/processing/worker/'))
             return res.status(403).json({ code: 'ORIGIN_NOT_ALLOWED' });
         next();
     });
@@ -201,6 +204,11 @@ export function createApp(config, { optimizeGlb } = {}) {
     app.use('/api/reviews', createReviewRouter(config, auth));
     const DATA_DIR = fs.realpathSync(config.dataDir);
     const contained = (p) => p === DATA_DIR || p.startsWith(DATA_DIR + path.sep);
+    const captures = createCaptureLibrary(config);
+    const results = createProcessingResults(config);
+    app.use('/api/captures', createCapturesRouter(captures, auth));
+    const jobs = createProcessingRouter(config, auth, { captures, results });
+    app.use('/api/processing', jobs);
     async function safe(raw, forbidRoot = false) {
         let decoded;
         try {
@@ -208,7 +216,7 @@ export function createApp(config, { optimizeGlb } = {}) {
         } catch {
             throw Object.assign(new Error('INVALID_PATH'), { status: 400 });
         }
-        if (decoded.includes('\0') || decoded.includes('\\') || decoded.split('/').includes('..'))
+        if (decoded.includes('\0') || decoded.includes('\\') || decoded.split('/').some((p) => p.startsWith('.')))
             throw Object.assign(new Error('FORBIDDEN'), { status: 403 });
         const target = path.resolve(DATA_DIR, '.' + (decoded.startsWith('/') ? decoded : '/' + decoded));
         if (!contained(target) || (forbidRoot && target === DATA_DIR))
@@ -286,7 +294,9 @@ export function createApp(config, { optimizeGlb } = {}) {
                 } else {
                     // Serve the file
                     if (targetPath.toLowerCase().endsWith('.glb')) {
-                        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+                        // Models can be replaced at the same path; keep cached bytes
+                        // only when their ETag/Last-Modified validator still matches.
+                        res.setHeader('Cache-Control', 'public, no-cache');
                     }
                     return res.sendFile(targetPath);
                 }

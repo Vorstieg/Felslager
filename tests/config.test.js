@@ -13,6 +13,27 @@ const config = () => ({
   trustProxy: false,
 });
 
+test('capture and processing storage paths and video upload limits are configurable', () => {
+  const loaded = loadConfig({ BETTER_AUTH_SECRET: config().secret, AUTH_DATABASE_PATH: config().databasePath,
+    CAPTURE_DIR: '/srv/captures', PROCESSING_DIR: '/srv/processing', CAPTURE_MAX_FILE_BYTES: '1024',
+    CAPTURE_MAX_DATASET_BYTES: '4096' });
+  assert.equal(loaded.captureDir, '/srv/captures');
+  assert.equal(loaded.processingDir, '/srv/processing');
+  assert.equal(loaded.captureMaxFileBytes, 1024);
+  assert.equal(loaded.captureMaxDatasetBytes, 4096);
+  for (const value of [0, -1, NaN, Infinity, 1.5]) assert.throws(() => validateConfig({ ...config(), captureMaxFileBytes: value }), /CAPTURE_MAX_FILE_BYTES/);
+});
+
+test('capture dataset budgets are positive safe integers and configurable', () => {
+  for (const captureMaxDatasetBytes of [0, -1, NaN, 1.5, Number.MAX_SAFE_INTEGER + 1])
+    assert.throws(() => validateConfig({ ...config(), captureMaxDatasetBytes }), /CAPTURE_MAX_DATASET_BYTES/);
+  assert.doesNotThrow(() => validateConfig({ ...config(), captureMaxDatasetBytes: 1024 }));
+  const loaded = loadConfig({ BETTER_AUTH_SECRET: config().secret, AUTH_DATABASE_PATH: config().databasePath,
+    CAPTURE_DIR: '/srv/surveys', CAPTURE_MAX_DATASET_BYTES: '2048' });
+  assert.equal(loaded.captureDir, '/srv/surveys');
+  assert.equal(loaded.captureMaxDatasetBytes, 2048);
+});
+
 test("configuration requires a persistent private database and explicit trusted HTTPS origins", () => {
   assert.doesNotThrow(() => validateConfig(config()));
   for (const patch of [
@@ -26,11 +47,26 @@ test("configuration requires a persistent private database and explicit trusted 
     { trustedOrigins: ["https://other.example.test"] },
     { baseURL: "http://lager.example.test/api/auth" },
     { baseURL: "https://localhost/api/auth" },
+    { boltWorkerLeaseMs: 0 },
+    { boltWorkerLeaseMs: NaN },
+    { boltWorkerLeaseMs: Infinity },
   ])
     assert.throws(
       () => validateConfig({ ...config(), ...patch }),
       JSON.stringify(patch),
     );
+});
+
+test("worker lease duration defaults to five minutes and accepts a configured timeout", () => {
+  const env = {
+    BETTER_AUTH_SECRET: config().secret,
+    AUTH_DATABASE_PATH: config().databasePath,
+  };
+  assert.equal(loadConfig(env).boltWorkerLeaseMs, 300_000);
+  assert.equal(loadConfig({ ...env, BOLT_WORKER_LEASE_SECONDS: "60" }).boltWorkerLeaseMs, 60_000);
+  for (const value of ["0", "-1", "invalid", "Infinity"]) {
+    assert.throws(() => loadConfig({ ...env, BOLT_WORKER_LEASE_SECONDS: value }), /BOLT_WORKER_LEASE_SECONDS/);
+  }
 });
 
 test("startup requires an auth secret and database but no SMTP", () => {
