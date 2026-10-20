@@ -1,0 +1,4 @@
+# Optional GPU acceleration for YOLO. Reconstruction GPU settings live in compose.yaml.
+services:
+  worker-detection:
+    gpus: all
