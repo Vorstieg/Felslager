@@ -1,0 +1,52 @@
+[project]
+name = "felslager-processing"
+version = "0.1.0"
+description = "Felslager reconstruction and bolt detection worker"
+readme = "README.md"
+requires-python = ">=3.10.0, <3.11"
+dependencies = [
+    "opencv-python-headless==4.11.0.86",
+    "numpy>=1.26",
+    "pillow>=10",
+    "pydantic>=2",
+    "python-dotenv>=1.0",
+    "trimesh>=4.11.2",
+    "requests>=2.32.0",
+    "scipy>=1.13.0",
+]
+
+[project.optional-dependencies]
+detection = ["ultralytics>=8.4.13", "torch", "torchvision"]
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu124", marker = "sys_platform != 'darwin'" },
+]
+torchvision = [
+    { index = "pytorch-cu124", marker = "sys_platform != 'darwin'" },
+]
+
+[tool.uv]
+package = true
+
+[tool.setuptools.packages.find]
+include = ["felslager_processing*"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "sahi>=0.11.36",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+minversion = "9.0"
+addopts = ["-ra", "-q"]
+testpaths = [
+    "tests",
+]

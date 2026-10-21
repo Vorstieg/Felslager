@@ -1,0 +1,14 @@
+# Optional: keep worker engine state on a dedicated disk.
+# Create realityscan-state and nodeodm-data owned by UID 1000 before starting Compose.
+# Captures and processing always use the host API paths configured in .env.
+volumes:
+  realityscan-state:
+    driver_opts:
+      type: none
+      o: bind
+      device: ${FELSLAGER_STORAGE_DIR:?Set FELSLAGER_STORAGE_DIR}/realityscan-state
+  nodeodm-data:
+    driver_opts:
+      type: none
+      o: bind
+      device: ${FELSLAGER_STORAGE_DIR:?Set FELSLAGER_STORAGE_DIR}/nodeodm-data

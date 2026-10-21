@@ -1,0 +1,97 @@
+name: felslager
+
+x-worker: &worker
+  init: true
+  restart: unless-stopped
+  environment: &worker-env
+    FELSLAGER_JOBS_URL: ${FELSLAGER_JOBS_URL:-http://host.docker.internal:3001/api/processing}
+    BOLT_WORKER_TOKEN: ${BOLT_WORKER_TOKEN:?Set BOLT_WORKER_TOKEN in .env}
+    BOLT_POLL_SECONDS: ${BOLT_POLL_SECONDS:-5}
+    BOLT_HEARTBEAT_SECONDS: ${BOLT_HEARTBEAT_SECONDS:-10}
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  volumes:
+    - &processing-mount
+      type: bind
+      source: ${PROCESSING_DIR:?Set an absolute PROCESSING_DIR shared with the host API}
+      target: ${PROCESSING_DIR:?Set an absolute PROCESSING_DIR shared with the host API}
+      bind:
+        create_host_path: false
+    - &capture-mount
+      type: bind
+      source: ${CAPTURE_DIR:?Set an absolute CAPTURE_DIR shared with the host API}
+      target: ${CAPTURE_DIR:?Set an absolute CAPTURE_DIR shared with the host API}
+      read_only: true
+      bind:
+        create_host_path: false
+
+services:
+  worker-detection:
+    <<: *worker
+    profiles: [detection]
+    build:
+      context: ./processing
+      target: detection
+    command: ["--role", "detection"]
+
+  worker-odm:
+    <<: *worker
+    profiles: [odm]
+    build:
+      context: ./processing
+      target: reconstruction
+    environment:
+      <<: *worker-env
+      NODEODM_URL: http://nodeodm:3000
+    command: ["--role", "reconstruction", "--engine", "odm"]
+    depends_on:
+      - nodeodm
+
+  nodeodm:
+    profiles: [odm]
+    image: opendronemap/nodeodm:3.5.6
+    restart: unless-stopped
+    volumes:
+      - nodeodm-data:/var/www/data
+
+  worker-meshroom:
+    <<: *worker
+    profiles: [meshroom]
+    build:
+      context: ./processing
+      target: meshroom
+    gpus: all
+    volumes:
+      - *processing-mount
+      - *capture-mount
+      - type: bind
+        source: ${MESHROOM_INSTALL_DIR:-/opt/Meshroom-2025.1.0}
+        target: /opt/meshroom
+        read_only: true
+        bind:
+          create_host_path: false
+    command: ["--role", "reconstruction", "--engine", "meshroom"]
+
+  worker-realityscan:
+    <<: *worker
+    profiles: [realityscan]
+    build:
+      context: ./processing
+      target: realityscan
+      additional_contexts:
+        realityscan-installer: ${REALITYSCAN_INSTALLER_DIR:-/opt/felslager-installers/realityscan}
+    gpus: all
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - ${VIDEO_GID:-44}
+      - ${RENDER_GID:-109}
+    volumes:
+      - *processing-mount
+      - *capture-mount
+      - realityscan-state:/var/lib/realityscan
+    command: ["--role", "reconstruction", "--engine", "realityscan"]
+
+volumes:
+  nodeodm-data:
+  realityscan-state:

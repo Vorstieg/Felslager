@@ -217,6 +217,11 @@ export function createProcessingRouter(config, auth, { captures, results }) {
         const filename = await fs.promises.realpath(path.resolve(base, relative));
         if (!filename.startsWith(base + path.sep) || !(await fs.promises.stat(filename)).isFile()) throw new Error('INVALID_ARTIFACT_PATH');
       }
+      if (artifact.images !== undefined) {
+        const images = await fs.promises.realpath(path.resolve(base, relativePath(artifact.images)));
+        if (!images.startsWith(base + path.sep) || !(await fs.promises.stat(images)).isDirectory())
+          throw new Error('INVALID_ARTIFACT_PATH');
+      }
     } catch { return res.status(400).json({ code: 'INVALID_RECONSTRUCTION_ARTIFACT' }); }
     job.status = 'queued'; job.phase = 'detection'; job.stage = 'queued'; job.progress = 0;
     delete job.stageCurrent; delete job.stageTotal;

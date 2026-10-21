@@ -175,3 +175,18 @@ test('cancellation covers queued jobs, phase handoff, and crashed active workers
   await f.request(`/${detection.id}/cancel`, { method: 'POST' });
   assert.equal((await f.worker(detection, 'fail', { error: 'cancelled subprocess' }).then((r) => r.json())).status, 'cancelled');
 });
+
+test('handoff accepts standardized images and rejects paths outside the private work directory', async (t) => {
+  const f = await fixture(t);
+  await f.create();
+  const job = await (await f.claim()).json();
+  await mkdir(path.join(job.workPath, 'reconstruction/prepared-images'), { recursive: true });
+  await f.artifact(job, { images: 'reconstruction/prepared-images' });
+  assert.equal((await f.worker(job, 'reconstructed')).status, 200);
+
+  await f.create();
+  const invalid = await (await f.claim()).json();
+  await symlink(f.dataDir, path.join(invalid.workPath, 'outside'));
+  await f.artifact(invalid, { images: 'outside' });
+  assert.equal((await f.worker(invalid, 'reconstructed')).status, 400);
+});

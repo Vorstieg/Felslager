@@ -1,0 +1,15 @@
+# Local configuration and Python artifacts
+.env
+.venv/
+__pycache__/
+*.py[oc]
+.pytest_cache/
+build/
+dist/
+*.egg-info/
+.idea/
+.DS_Store
+
+# Runtime output
+runs/
+.nodeodm-data/
