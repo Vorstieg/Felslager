@@ -133,10 +133,12 @@ async function rebuildManifest(DATA_DIR) {
                                     type: "Feature",
                                     geometry: geometry,
                                     properties: {
+                                        ...data.properties,
                                         id: fileSlug,
                                         name: name,
                                         path: relativePath,
                                         type: data.properties?.type || data.type || [],
+                                        kind: data.properties?.kind || (isPolygon ? 'sector' : 'crag'),
                                         hash: hash ? hash.trim() : null,
                                         minzoom: isPolygon ? 16 : 0
                                     }
