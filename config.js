@@ -1,5 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadSearchConfig } from "./search.js";
 export function loadConfig(env = process.env) {
   const production = env.NODE_ENV === "production";
   const studioURL = env.STUDIO_URL || "https://studio.felsverzeichnis.at";
@@ -21,6 +22,7 @@ export function loadConfig(env = process.env) {
     trustProxy: env.TRUST_PROXY
       ? env.TRUST_PROXY.split(",").map((s) => s.trim())
       : false,
+    search: loadSearchConfig(env),
   };
   validateConfig(config);
   return config;
