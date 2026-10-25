@@ -12,6 +12,7 @@ import { toNodeHandler, fromNodeHeaders } from 'better-auth/node';
 import { createAuth } from './auth.js';
 import { loadConfig } from './config.js';
 import { createReviewRouter } from './reviews.js';
+import { createSearchIndexer } from './search.js';
 import 'dotenv/config';
 
 const require = createRequire(import.meta.url);
@@ -162,9 +163,14 @@ async function rebuildManifest(DATA_DIR) {
     }
 }
 
-export function createApp(config, { optimizeGlb } = {}) {
+export function createApp(config, { optimizeGlb, searchFetch } = {}) {
     const service = createAuth(config);
     const { auth } = service;
+    const searchIndexer = createSearchIndexer({
+        searchConfig: config.search ?? null,
+        dataDir: fs.realpathSync(config.dataDir),
+        fetch: searchFetch
+    });
     const app = express();
     app.disable('x-powered-by');
     app.set('trust proxy', config.trustProxy || false);
@@ -296,6 +302,8 @@ export function createApp(config, { optimizeGlb } = {}) {
             }
         }
         try {
+            const searchDirs = [];
+            const isJson = (p) => path.extname(p).toLowerCase() === '.json';
             if (req.method === 'PUT') {
                 if (!Buffer.isBuffer(req.body) || !req.body.length) {
                     return res.status(400).json({ code: 'NO_CONTENT' });
@@ -357,6 +365,7 @@ export function createApp(config, { optimizeGlb } = {}) {
                     path.join(path.dirname(targetPath), 'hash.txt'),
                     await computeFolderHash(path.dirname(targetPath))
                 );
+                if (ext === '.json') searchDirs.push(path.dirname(targetPath));
             } else if (req.method === 'DELETE') {
                 const stat = await fs.promises.stat(targetPath);
                 await fs.promises.rm(targetPath, { recursive: stat.isDirectory() });
@@ -365,7 +374,10 @@ export function createApp(config, { optimizeGlb } = {}) {
                         path.join(path.dirname(targetPath), 'hash.txt'),
                         await computeFolderHash(path.dirname(targetPath))
                     );
+                if (stat.isDirectory()) searchDirs.push(targetPath);
+                else if (isJson(targetPath)) searchDirs.push(path.dirname(targetPath));
             } else if (req.method === 'MOVE') {
+                const isDirectory = (await fs.promises.stat(targetPath)).isDirectory();
                 await fs.promises.mkdir(path.dirname(req.destination), {
                     recursive: true
                 });
@@ -376,8 +388,12 @@ export function createApp(config, { optimizeGlb } = {}) {
                             path.join(folder, 'hash.txt'),
                             await computeFolderHash(folder)
                         );
+                if (isDirectory) searchDirs.push(targetPath, req.destination);
+                else if (isJson(targetPath) || isJson(req.destination))
+                    searchDirs.push(path.dirname(targetPath), path.dirname(req.destination));
             }
             await rebuildManifest(DATA_DIR);
+            void searchIndexer.scheduleSync(searchDirs.map((dir) => path.relative(DATA_DIR, dir)));
             res.status(200).send(
                 req.method === 'PUT'
                     ? 'File saved successfully'
@@ -400,9 +416,11 @@ export function createApp(config, { optimizeGlb } = {}) {
     return {
         ...service,
         app,
+        search: searchIndexer,
         initialize: async () => {
             await generateMissingHashes(DATA_DIR);
             await rebuildManifest(DATA_DIR);
+            void searchIndexer.scheduleReindex();
         }
     };
 }
@@ -411,6 +429,12 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     const config = loadConfig();
     const service = createApp(config);
     await service.initialize();
+    if (service.search.enabled)
+        service.search
+            .ensureSearchKey()
+            .then((key) => console.log(`[Felslager] Public Meilisearch search key: ${key}`))
+            .catch((e) => console.warn(`[Felslager] Could not ensure Meilisearch search key: ${e.message}`));
+    else console.log('[Felslager] MEILI_URL not set: search sync disabled.');
     const server = service.app.listen(config.port, () =>
         console.log(`Felslager listening on ${config.port}`)
     );
