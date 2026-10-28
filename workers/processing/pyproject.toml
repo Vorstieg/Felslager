@@ -5,6 +5,9 @@ description = "Felslager reconstruction and bolt detection worker"
 readme = "README.md"
 requires-python = ">=3.10.0, <3.11"
 dependencies = [
+    "prefect==3.8.8",
+    # Prefect's server/test harness still uses Body(min_items=...).
+    "fastapi==0.139.0",
     "opencv-python-headless==4.11.0.86",
     "numpy>=1.26",
     "pillow>=10",

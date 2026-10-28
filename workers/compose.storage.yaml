@@ -1,7 +1,13 @@
 # Optional: keep worker engine state on a dedicated disk.
 # Create realityscan-state and nodeodm-data owned by UID 1000 before starting Compose.
+# Create prefect-data for the Prefect server (the official image runs as root).
 # Captures and processing always use the host API paths configured in .env.
 volumes:
+  prefect-data:
+    driver_opts:
+      type: none
+      o: bind
+      device: ${FELSLAGER_STORAGE_DIR:?Set FELSLAGER_STORAGE_DIR}/prefect-data
   realityscan-state:
     driver_opts:
       type: none

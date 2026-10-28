@@ -108,7 +108,6 @@ def make_pipeline(installation: Path, destination: Path) -> None:
 
 def reconstruct(images: Path, out: Path, check_cancelled: Callable[[], None],
                 progress: Callable[[str, int], None], installation: Path | None = None) -> ReconstructionOutput:
-    import shutil
     import trimesh
 
     installation = (installation or Path(os.environ.get("MESHROOM_HOME", "/opt/Meshroom-2025.1.0"))).expanduser().resolve()
@@ -126,12 +125,9 @@ def reconstruct(images: Path, out: Path, check_cancelled: Callable[[], None],
         check_cancelled()
         name = f"image_{index:06d}{source.suffix.lower()}"
         names[source.relative_to(images).as_posix()] = name
-        # Preserve bytes and EXIF, while avoiding duplicate basenames and nested
-        # folders. Hard links avoid copying originals on a shared filesystem.
-        try:
-            os.link(source, staged / name)
-        except OSError:
-            shutil.copy2(source, staged / name)
+        # Link directly to capture photos or generated video frames, preserving
+        # bytes and EXIF without copying across bind mounts.
+        (staged / name).symlink_to(source.resolve())
     pipeline = out / "pipeline.mg"
     make_pipeline(installation, pipeline)
     published = out / "published"

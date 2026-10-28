@@ -12,15 +12,18 @@ from .reconstruction import load_cameras
 
 def finish_result(job: dict, artifact: dict, images: Path, detect: bool = False):
     work, output = Path(job["workPath"]), Path(job["outputAbsolutePath"])
-    glb = artifact_path(work, artifact["model"])
-    reconstruction = artifact_path(work, artifact["reconstruction"])
+    source = Path(job.get("sourceWorkPath", work))
+    glb = artifact_path(source, artifact["model"])
+    reconstruction = artifact_path(source, artifact["reconstruction"])
     with tempfile.TemporaryDirectory(prefix="result-", dir=work) as temporary:
         staged = Path(temporary)
         if detect:
             from .detection import runner as detection
-            mesh = artifact_path(work, artifact["detectionMesh"])
+            mesh = artifact_path(source, artifact["detectionMesh"])
             detection.run_detection(job["id"], images, detection.MODEL, mesh, reconstruction, staged,
-                          job["name"], artifact["names"], coordinate_system=artifact["coordinateSystem"])
+                          job["name"], artifact["names"], coordinate_system=artifact["coordinateSystem"],
+                          placement_method=job.get("boltPlacementMethod", "triangle"),
+                          **({"cached_detections": Path(job["detectionsPath"])} if job.get("sourceProcessingId") else {}))
         else:
             cameras = load_cameras(reconstruction)
             exported = {name: cameras[engine_name]["center"].tolist()
@@ -30,12 +33,12 @@ def finish_result(job: dict, artifact: dict, images: Path, detect: bool = False)
             (staged / "project.json").write_text(json.dumps({"name": job["name"], "hits": [], "gps": [],
                 "cameras": exported, "coordinateSystem": artifact["coordinateSystem"]}))
         shutil.copy2(glb, staged / "model.glb")
-        if (work / "telemetry").is_dir():
-            shutil.copytree(work / "telemetry", staged / "telemetry")
+        if (source / "telemetry").is_dir():
+            shutil.copytree(source / "telemetry", staged / "telemetry")
         client.check_cancelled(job["id"])
         client.report_progress(job["id"], "finalizing", 99)
-        output.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(staged, output, dirs_exist_ok=True)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        staged.rename(output)
         client.check_cancelled(job["id"])
         client.request("POST", f"/worker/{job['id']}/complete", json={})
 

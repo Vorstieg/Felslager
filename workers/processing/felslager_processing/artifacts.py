@@ -21,7 +21,7 @@ class ReconstructionOutput:
 def publish_artifacts(work: Path, output: ReconstructionOutput, images: Path, engine: str) -> dict:
     """Export every engine into the same layout, committing the manifest last.
 
-    Keep artifact.json and its v1 fields compatible with the leased API. Engine
+    Keep artifact.json and its v1 fields compatible with the artifact contract. Engine
     scratch files are private implementation details outside reconstruction/.
     """
     work = work.resolve()
@@ -49,7 +49,9 @@ def publish_artifacts(work: Path, output: ReconstructionOutput, images: Path, en
         raise ReconstructionError("Prepared images are outside the private work directory or missing")
     bundle = work / "reconstruction"
     bundle.mkdir()
-    shutil.copy2(model, bundle / "model.glb")
+    # Engine output and the handoff share private job storage. Rename large
+    # files instead of retaining a second copy of every reconstructed mesh.
+    shutil.move(str(model), bundle / "model.glb")
     (bundle / "cameras.json").write_text(json.dumps(scene))
     # Detection may need the engine's matching OBJ rather than its textured GLB.
     if mesh == model:
@@ -58,7 +60,7 @@ def publish_artifacts(work: Path, output: ReconstructionOutput, images: Path, en
         if mesh.suffix.lower() not in {".glb", ".obj"}:
             raise ReconstructionError("Unsupported detection mesh format")
         mesh_name = "detection-mesh" + mesh.suffix.lower()
-        shutil.copy2(mesh, bundle / mesh_name)
+        shutil.move(str(mesh), bundle / mesh_name)
     shutil.move(str(images), bundle / "prepared-images")
     artifact = {
         "version": 1, "engine": engine,

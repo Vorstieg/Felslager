@@ -3,7 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { atomicJSON, fail, regularTree, relativePath, safePath } from './storage-utils.js';
 
-// Completed outputs are owned by the API. Workers only write lease directories.
+// Completed outputs are owned by the API. Workers only write run directories.
 export function createProcessingResults(config) {
   const jobs = path.resolve(config.processingDir || path.join(path.dirname(config.databasePath), 'processing'));
   const rootFor = (job) => path.join(jobs, job.id, 'results');
@@ -22,7 +22,7 @@ export function createProcessingResults(config) {
       const root = rootFor(job);
       const existing = await find(job);
       if (existing) {
-        if (existing.attempt !== job.leaseToken) fail('RESULT_ALREADY_EXISTS', 409);
+        if (existing.attempt !== job.flowRunId) fail('RESULT_ALREADY_EXISTS', 409);
         return existing;
       }
       const files = await regularTree(output);
@@ -32,7 +32,7 @@ export function createProcessingResults(config) {
       const staging = path.join(jobs, job.id, `.result-${crypto.randomUUID()}`);
       try {
         await fs.promises.cp(output, path.join(staging, 'generated'), { recursive: true, mode: fs.constants.COPYFILE_FICLONE });
-        const record = { attempt: job.leaseToken, completedAt: new Date().toISOString() };
+        const record = { attempt: job.flowRunId, completedAt: new Date().toISOString() };
         await atomicJSON(path.join(staging, 'result.json'), record);
         await fs.promises.rename(staging, root);
         return record;
@@ -43,6 +43,7 @@ export function createProcessingResults(config) {
       const files = await regularTree(path.join(root, 'generated'));
       return { processingId: job.id, entryPath: job.entryPath, captureId: job.captureId,
         engine: job.engine, runBoltDetection: job.runBoltDetection,
+        boltPlacementMethod: job.boltPlacementMethod ?? 'triangle',
         createdAt: record.completedAt,
         files: files.map((name) => ({ path: name, url: `${baseURL}/files?path=${encodeURIComponent(name)}` })) };
     },

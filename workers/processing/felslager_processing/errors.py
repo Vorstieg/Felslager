@@ -8,7 +8,3 @@ class ReconstructionError(RuntimeError):
 class JobCancelled(Exception):
     pass
 
-
-class LeaseLost(RuntimeError):
-    pass
-

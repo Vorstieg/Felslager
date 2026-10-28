@@ -56,12 +56,20 @@ def test_adapter_runs_cli_and_converts_outputs(tmp_path, monkeypatch):
     monkeypatch.setenv('REALITYSCAN_MODEL_PARAMS', str(preset))
     monkeypatch.setenv('REALITYSCAN_REGISTRATION_PARAMS', str(preset))
     out = tmp_path / 'output'
-    def run(command, log, cancel):
+    def run(command, log, cancel, poll=None):
         assert command[:4] == ['/bin/true', '-silent', wine_path(out / 'crash-reports'), '-headless']
         assert (out / 'crash-reports').is_dir()
+        image = out / 'images/image_000000.jpg'
+        assert image.is_symlink()
+        image.with_suffix('.jpg.cache').write_text('sidecar')
+        assert not list(images.glob('*.cache'))
         assert command[4:6] == ['-set', 'appQuitOnError=true']
         assert '-align' in command and '-calculateTexture' in command
         assert wine_path(out / 'model.obj') in command
+        index = command.index('-writeProgress')
+        assert command[index + 1:index + 3] == [wine_path(out / 'realityscan-progress.txt'), '2']
+        (out / 'realityscan-progress.txt').write_text('20561 0.5 10 10 #progress\n')
+        poll()
         scene(out / 'registration')
         (out / 'model.obj').write_text(trimesh.creation.box().export(file_type='obj'))
     monkeypatch.setattr(module, 'run_batch', run)
@@ -73,3 +81,42 @@ def test_adapter_runs_cli_and_converts_outputs(tmp_path, monkeypatch):
     assert len(names) == 2
     assert json.loads(calibration.read_text())['shots']
     assert (images / 'one.jpg').read_bytes() == b'original1'
+
+
+def test_native_progress_handles_partial_invalid_and_nested_records(tmp_path):
+    from felslager_processing.engines.realityscan import RealityScanProgress
+    path = tmp_path / 'progress.txt'
+    callback = Mock()
+    monitor = RealityScanProgress(path, callback)
+    monitor()
+    callback.assert_not_called()
+    path.write_bytes(b'65537 1 20 0 #completed\n20561 0.5 30 30 #progress\n8208 0.2')
+    monitor()
+    assert callback.call_args.args[1] == 42
+    assert callback.call_args.args[4]['operation'] == 'Reconstructing mesh'
+    with path.open('ab') as stream:
+        stream.write(b' 5 20 #progress\ninvalid\n7 nan 1 2 #progress\n')
+    monitor()
+    assert callback.call_args.args[1] == 42
+    assert callback.call_args.args[4]['operationProgress'] == 20
+    assert callback.call_args.args[4]['operation'] == 'Calculating depth maps'
+    count = callback.call_count
+    monitor()
+    assert callback.call_count == count
+    path.write_text('7 0.5 4 4 #progress\n')
+    monitor()
+    assert callback.call_args.args[1] == 65
+    assert callback.call_args.args[4]['operationRemainingSeconds'] == 4
+
+
+def test_subprocess_delivers_final_native_progress(tmp_path):
+    import sys
+    from felslager_processing.engines.common import run_batch
+    from felslager_processing.engines.realityscan import RealityScanProgress
+    path = tmp_path / 'progress.txt'
+    callback = Mock()
+    monitor = RealityScanProgress(path, callback)
+    script = 'from pathlib import Path; import sys; Path(sys.argv[1]).write_text("7 0.75 12 4 #progress\\n")'
+    run_batch([sys.executable, '-c', script, str(path)], tmp_path / 'cli.log', Mock(), poll=monitor)
+    assert callback.call_args.args[4]['operation'] == 'Texturing'
+    assert callback.call_args.args[4]['operationProgress'] == 75

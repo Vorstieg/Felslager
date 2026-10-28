@@ -27,6 +27,9 @@ def camera_records(scenes: list | dict) -> dict[str, dict]:
         fy = float(camera.get("focal_y", camera.get("focal", 0)))
         if width < 1 or height < 1 or not np.isfinite([fx, fy]).all() or min(fx, fy) <= 0:
             raise ReconstructionError(f"Invalid camera calibration for {name}")
+        if not np.isfinite([float(camera.get(k, 0)) for k in
+                            ("c_x", "c_y", "k1", "k2", "p1", "p2", "k3")]).all():
+            raise ReconstructionError(f"Invalid camera calibration for {name}")
         rotation = np.asarray(shot["rotation"], dtype=float)
         translation = np.asarray(shot["translation"], dtype=float)
         if rotation.shape != (3,) or translation.shape != (3,) or not np.isfinite([rotation, translation]).all():
@@ -40,7 +43,13 @@ def camera_records(scenes: list | dict) -> dict[str, dict]:
 
 
 def camera_ray(cam: dict, pixel: tuple[float, float], image_shape: tuple) -> np.ndarray:
-    """Use OpenSfM's right/down/forward camera axes, including Brown intrinsics."""
+    """World ray from image-edge pixels (top-left pixel center is .5, .5).
+
+    YOLO boxes use this convention. OpenSfM normalized coordinates therefore
+    denormalize with width/2, height/2; OpenCV pixel-center coordinates would
+    instead use (width-1)/2, (height-1)/2. Edge coordinates also resize directly.
+    Camera axes are right/down/forward.
+    """
     camera = cam["camera"]
     scale = max(cam["width"], cam["height"])
     fx = float(camera.get("focal_x", camera.get("focal", 0))) * scale
@@ -51,9 +60,33 @@ def camera_ray(cam: dict, pixel: tuple[float, float], image_shape: tuple) -> np.
     distortion = np.array([camera.get(k, 0) for k in ("k1", "k2", "p1", "p2", "k3")], dtype=float)
     x, y = pixel
     pixels = np.array([[[x * cam["width"] / image_shape[1], y * cam["height"] / image_shape[0]]]], dtype=float)
-    xy = cv2.undistortPoints(pixels, intrinsic, distortion)[0, 0]
+    # The default five iterations can leave errors of tens of pixels near
+    # distorted image edges. Iterate to a pixel-space convergence tolerance.
+    xy = cv2.undistortPointsIter(
+        pixels, intrinsic, distortion, None, None,
+        (cv2.TERM_CRITERIA_COUNT | cv2.TERM_CRITERIA_EPS, 100, 1e-10))[0, 0]
+    check = cv2.projectPoints(np.array([[xy[0], xy[1], 1.]]), np.zeros(3),
+                              np.zeros(3), intrinsic, distortion)[0]
+    if (not np.isfinite(xy).all() or not np.isfinite(check).all()
+            or np.linalg.norm(check - pixels) > 1e-5):
+        raise ReconstructionError("Camera distortion inversion did not converge")
     direction = cam["R"].T @ np.array([xy[0], xy[1], 1.0])
     return direction / np.linalg.norm(direction)
+
+
+def project_pixels(cam: dict, points: np.ndarray) -> np.ndarray:
+    """Project world points to original image-edge pixels, with distortion."""
+    camera = cam["camera"]
+    scale = max(cam["width"], cam["height"])
+    fx = float(camera.get("focal_x", camera.get("focal", 0))) * scale
+    fy = float(camera.get("focal_y", camera.get("focal", 0))) * scale
+    intrinsic = np.array([[fx, 0, float(camera.get("c_x", 0)) * scale + cam["width"] / 2],
+                          [0, fy, float(camera.get("c_y", 0)) * scale + cam["height"] / 2],
+                          [0, 0, 1]], dtype=float)
+    distortion = np.array([camera.get(k, 0) for k in ("k1", "k2", "p1", "p2", "k3")], dtype=float)
+    rotation = cv2.Rodrigues(cam["R"])[0]
+    return cv2.projectPoints(np.asarray(points, dtype=float).reshape(-1, 3), rotation,
+                             -cam["R"] @ cam["center"], intrinsic, distortion)[0].reshape(-1, 2)
 
 
 class MeshProjector:
@@ -67,6 +100,9 @@ class MeshProjector:
         self.a = vertices[faces[:, 0]]
         self.e1 = vertices[faces[:, 1]] - self.a
         self.e2 = vertices[faces[:, 2]] - self.a
+        # A determinant has units of area. Scale its parallelism tolerance
+        # with triangle area, so changing reconstruction units preserves hits.
+        self.area = np.linalg.norm(np.cross(self.e1, self.e2), axis=1)
 
     def intersect(self, origin: np.ndarray, direction: np.ndarray):
         best_distance = np.inf
@@ -77,7 +113,8 @@ class MeshProjector:
             a, e1, e2 = (v[start:start + 100_000] for v in (self.a, self.e1, self.e2))
             h = np.cross(direction, e2)
             determinant = np.einsum("ij,ij->i", e1, h)
-            valid = np.abs(determinant) > 1e-10
+            area = self.area[start:start + 100_000]
+            valid = np.abs(determinant) > 32 * np.finfo(float).eps * area
             inverse = np.zeros_like(determinant)
             inverse[valid] = 1 / determinant[valid]
             s = origin - a
@@ -85,7 +122,7 @@ class MeshProjector:
             q = np.cross(s, e1)
             v = inverse * np.einsum("ij,j->i", q, direction)
             distance = inverse * np.einsum("ij,ij->i", e2, q)
-            valid &= (u >= 0) & (v >= 0) & (u + v <= 1) & (distance > 1e-8)
+            valid &= (u >= 0) & (v >= 0) & (u + v <= 1) & (distance > 0)
             candidates = np.where(valid, distance, np.inf)
             index = int(np.argmin(candidates))
             if candidates[index] < best_distance:
@@ -95,6 +132,44 @@ class MeshProjector:
         if best_normal is None:
             return None
         return origin + best_distance * direction, best_distance, float(abs(best_normal @ direction))
+
+
+class VertexProjector:
+    """Legacy dashboard snapping in model units; cameras must share this space."""
+
+    def __init__(self, vertices: np.ndarray, normals: np.ndarray):
+        self.vertices = np.asarray(vertices, dtype=float)
+        self.normals = np.asarray(normals, dtype=float)
+        if (self.vertices.ndim != 2 or self.vertices.shape[1] != 3
+                or not len(self.vertices) or self.normals.shape != self.vertices.shape
+                or not np.isfinite(self.vertices).all() or not np.isfinite(self.normals).all()):
+            raise ReconstructionError("Detection mesh contains no valid vertices or normals")
+        self.normals = self.normals / np.maximum(np.linalg.norm(self.normals, axis=1, keepdims=True), 1e-8)
+        self.grid = {}
+        for index, vertex in enumerate(self.vertices):
+            self.grid.setdefault(tuple((vertex / 0.5).astype(int)), []).append(index)
+
+    def intersect(self, origin: np.ndarray, direction: np.ndarray):
+        # Preserve the original dashboard's first successful probe, seven-cell
+        # neighbourhood, 15 cm tolerance and 1–35 unit search window.
+        neighbours = ((0, 0, 0), (1, 0, 0), (-1, 0, 0), (0, 1, 0),
+                      (0, -1, 0), (0, 0, 1), (0, 0, -1))
+        for distance in np.arange(1.0, 35.0, 0.5):
+            cell = ((origin + direction * distance) / 0.5).astype(int)
+            best, best_squared = None, 0.15 ** 2
+            for offset in neighbours:
+                for index in self.grid.get(tuple(cell + offset), ()):
+                    delta = self.vertices[index] - origin
+                    along = float(delta @ direction)
+                    if along < 1.0:
+                        continue
+                    squared = float(delta @ delta - along ** 2)
+                    if squared < best_squared:
+                        best, best_squared = index, squared
+            if best is not None:
+                point = self.vertices[best]
+                return point.copy(), float(np.linalg.norm(point - origin)), float(abs(self.normals[best] @ direction))
+        return None
 
 
 def load_cameras(filename: Path) -> dict[str, dict]:

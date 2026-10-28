@@ -15,7 +15,7 @@ import requests
 from felslager_processing import api as client, artifacts, capture, results, __main__ as cli
 from felslager_processing.detection import runner as detection_runtime
 from felslager_processing.engines import odm
-from felslager_processing.reconstruction import ReconstructionError, MeshProjector, camera_records, camera_ray
+from felslager_processing.reconstruction import ReconstructionError, MeshProjector, VertexProjector, camera_records, camera_ray
 
 
 def scene():
@@ -25,13 +25,12 @@ def scene():
 
 
 @pytest.fixture
-def worker(monkeypatch):
+def worker(monkeypatch, prefect_backend):
     from felslager_processing import worker as module
     monkeypatch.setattr(client, "API", "http://example.invalid")
     monkeypatch.setattr(client, "TOKEN", "test-token")
     monkeypatch.setattr(odm, "ODM", "http://example.invalid")
-    monkeypatch.setattr(client, "ACTIVE_LEASE", None)
-    monkeypatch.setattr(client, "LEASE_ERROR", None)
+    monkeypatch.setattr(client, "ACTIVE_RUN_ID", None)
     monkeypatch.setattr(detection_runtime, "DETECTION_MODEL", None)
     monkeypatch.setattr(client, "check_cancelled", Mock())
     monkeypatch.setattr(client, "report_progress", Mock())
@@ -100,6 +99,27 @@ def archive_response(files):
     return response
 
 
+def test_vertex_snapping_tolerance_forward_window_and_surface_weight():
+    vertices = np.array([[.1, 0, 5], [.02, 0, 5], [0, 0, -2], [0, 0, .5], [0, 0, 50.]])
+    projector = VertexProjector(vertices, np.tile([0., 0, 1], (5, 1)))
+    point, distance, weight = projector.intersect(np.zeros(3), np.array([0., 0, 1]))
+    np.testing.assert_allclose(point, [.02, 0, 5])
+    assert distance == pytest.approx(np.linalg.norm(point)) and weight == 1
+    assert projector.intersect(np.array([1., 0, 0]), np.array([0., 0, 1])) is None
+    far = VertexProjector(vertices[2:], np.tile([0., 0, 1], (3, 1)))
+    assert far.intersect(np.zeros(3), np.array([0., 0, 1])) is None
+    # Exact triangles map sparse surfaces that legacy vertex snapping misses.
+    sparse = mesh(5)
+    assert MeshProjector(sparse.vertices, sparse.faces).intersect(np.zeros(3), np.array([0., 0, 1])) is not None
+    assert VertexProjector(sparse.vertices, np.tile([0., 0, 1], (3, 1))).intersect(np.zeros(3), np.array([0., 0, 1])) is None
+
+
+def test_unknown_placement_fails_before_loading_detector(tmp_path):
+    with pytest.raises(ReconstructionError, match="Unsupported bolt placement"):
+        detection_runtime.run_detection("job", tmp_path, tmp_path, tmp_path, tmp_path,
+                                        tmp_path, "Wall", {}, placement_method="unknown")
+
+
 def archive_files():
     return {"odm_texturing/odm_textured_model_geo.glb": b"model", "odm_texturing/odm_textured_model_geo.obj": b"mesh", "opensfm/reconstruction.json": json.dumps(scene())}
 
@@ -160,23 +180,32 @@ def test_odm_init_is_multipart_and_requests_cameras_and_mesh(worker, monkeypatch
     assert result.names == {"a.jpg": "image_000000.jpg", "b.jpg": "image_000001.jpg"}
 
 
+@pytest.mark.parametrize("placement_method", ["triangle", "vertex", "multiview"])
 @pytest.mark.parametrize("classes", [[], ["bolt", "anchor"]])
-def test_detection_exports_all_cameras_and_maps_bolts_and_anchors(worker, monkeypatch, tmp_path, classes):
+def test_detection_exports_all_cameras_and_maps_bolts_and_anchors(worker, monkeypatch, tmp_path, classes, placement_method):
     images = tmp_path / "images"; images.mkdir(); out = tmp_path / "out"; out.mkdir()
     cv2.imwrite(str(images / "photo.jpg"), np.zeros((100, 100, 3), dtype=np.uint8))
     cameras = tmp_path / "reconstruction.json"; cameras.write_text(json.dumps(scene()))
     detections = [SimpleNamespace(bbox_xyxy=[45, 45, 55, 55], confidence=.9, class_name=name) for name in classes]
     monkeypatch.setitem(sys.modules, "ultralytics", SimpleNamespace(YOLO=Mock()))
     monkeypatch.setitem(sys.modules, "felslager_processing.detection.inference", SimpleNamespace(predict_tiled=Mock(return_value=SimpleNamespace(detections=detections))))
-    monkeypatch.setitem(sys.modules, "trimesh", SimpleNamespace(load=Mock(return_value=mesh())))
-    detection_runtime.run_detection("job", images, tmp_path / "weights", tmp_path / "mesh.obj", cameras, out, "Wall", {"photo.jpg": "image_000000.jpg"})
+    geometry = mesh() if placement_method != "vertex" else SimpleNamespace(vertices=np.array([[.05, 0, 5.]]), vertex_normals=np.array([[0., 0, 1.]]))
+    monkeypatch.setitem(sys.modules, "trimesh", SimpleNamespace(load=Mock(return_value=geometry)))
+    detection_runtime.run_detection("job", images, tmp_path / "weights", tmp_path / "mesh.obj", cameras, out, "Wall", {"photo.jpg": "image_000000.jpg"}, placement_method=placement_method)
     project = json.loads((out / "project.json").read_text())
     assert project["cameras"] == {"photo.jpg": [0, 0, 0]}
     assert project["coordinateSystem"] == "Z_UP"
     assert [h["class"] for h in project["hits"]] == classes
     for hit in project["hits"]:
-        assert hit["cam_dist"] == 150 and hit["normal_dot"] == 1
+        assert hit["cam_dist"] == pytest.approx(150 if placement_method != "vertex" else np.linalg.norm([.05, 0, 5]))
+        assert hit["normal_dot"] == 1
         assert (out / hit["crop"]).is_file()
+        assert hit["positioning"]["incidenceAngleDeg"] == 0
+        assert hit["positioning"]["fallbackReason"] == ("insufficient_views" if placement_method == "multiview" else None)
+    assert project["positioning"]["requestedMethod"] == placement_method
+    assert project["mapping"]["unmapped"] == 0
+    exported = json.loads((out / "detections.json").read_text())
+    assert exported["calibration"]["photo.jpg"]["camera"]["projection_type"] == "brown"
 
 
 def test_zero_mapped_detections_fails_instead_of_silently_completing(worker, monkeypatch, tmp_path):
@@ -190,6 +219,9 @@ def test_zero_mapped_detections_fails_instead_of_silently_completing(worker, mon
     with pytest.raises(ReconstructionError, match="none intersected"):
         detection_runtime.run_detection("job", images, tmp_path / "weights", tmp_path / "mesh.obj", cameras, out, "Wall", {"photo.jpg": "image_000000.jpg"})
     assert json.loads((out / "project.json").read_text())["cameras"]
+    assert json.loads((out / "project.json").read_text())["mapping"]["unmapped"] == 1
+    exported = json.loads((out / "detections.json").read_text())
+    assert exported["frames"][0]["detections"][0]["mapping"] == "no_surface_hit"
 
 
 def test_invalid_download_is_actionable(worker, monkeypatch, tmp_path):
@@ -205,7 +237,7 @@ def job(tmp_path, phase="reconstruction", engine="odm"):
     images.mkdir(exist_ok=True)
     for name in ["photo.jpg", "second.jpg"]:
         (images / name).write_bytes(b"photo")
-    return {"id": "job", "engine": engine, "phase": phase, "leaseToken": "lease-1",
+    return {"id": "job", "engine": engine, "phase": phase, "flowRunId": "run-1",
             "runBoltDetection": True,
             "inputPath": str(tmp_path / "images"), "workPath": str(tmp_path / "work"),
             "outputAbsolutePath": str(tmp_path / "output"), "name": "Wall"}
@@ -230,7 +262,7 @@ def test_reconstruction_only_finishes_without_loading_detector(worker, monkeypat
     monkeypatch.setattr(detection_runtime, 'get_detection_model', detector)
     api = Mock(); monkeypatch.setattr(client, 'request', api)
     value = {**job(tmp_path), 'runBoltDetection': False}
-    worker.process(value, 'reconstruction')
+    worker.reconstruct_job(value)
     assert api.call_args.args == ('POST', '/worker/job/complete')
     assert (tmp_path / 'output/model.glb').read_bytes() == b'glb'
     project = json.loads((tmp_path / 'output/project.json').read_text())
@@ -277,9 +309,10 @@ def test_preparation_cancellation_stops_before_engine_launch(worker, monkeypatch
     monkeypatch.setattr(capture, 'run_batch', Mock(side_effect=worker.JobCancelled()))
     reconstruct = Mock(); monkeypatch.setattr(odm, 'reconstruct', reconstruct)
     api = Mock(); monkeypatch.setattr(client, 'request', api)
-    worker.process(job(tmp_path), 'reconstruction')
+    with pytest.raises(worker.JobCancelled):
+        worker.reconstruct_job(job(tmp_path))
     reconstruct.assert_not_called()
-    assert api.call_args.args == ('POST', '/worker/job/cancelled')
+    api.assert_not_called()
 
 
 def test_detection_uses_prepared_video_frames(worker, monkeypatch, tmp_path):
@@ -290,24 +323,25 @@ def test_detection_uses_prepared_video_frames(worker, monkeypatch, tmp_path):
     detection = Mock(side_effect=detect)
     monkeypatch.setattr(detection_runtime, 'run_detection', detection)
     monkeypatch.setattr(client, 'request', Mock())
-    worker.process(job(tmp_path, 'detection'), 'detection')
+    worker.detect_job(job(tmp_path, 'detection'))
     assert detection.call_args.args[1] == work / 'prepared'
+    assert detection.call_args.kwargs['placement_method'] == 'triangle'
 
 
 def test_detection_mapping_failure_does_not_publish_or_complete(worker, monkeypatch, tmp_path):
     write_artifact(tmp_path)
     monkeypatch.setattr(detection_runtime, "run_detection", Mock(side_effect=ReconstructionError("Detections were found, but none intersected the model.")))
     api = Mock(); monkeypatch.setattr(client, "request", api)
-    worker.process(job(tmp_path, "detection"), "detection")
-    assert api.call_count == 1
-    assert api.call_args.args == ("POST", "/worker/job/fail")
-    assert "none intersected" in api.call_args.kwargs["json"]["error"]
+    with pytest.raises(ReconstructionError, match="none intersected"):
+        worker.detect_job(job(tmp_path, "detection"))
+    api.assert_not_called()
     assert not (tmp_path / "output").exists()
     assert (tmp_path / "work/model.glb").is_file()
 
 
 @pytest.mark.parametrize("engine,coordinate_system", [("meshroom", "Y_UP"), ("realityscan", "Z_UP"), ("odm", "Z_UP")])
-def test_reconstruction_writes_private_handoff_without_detection(worker, monkeypatch, tmp_path, engine, coordinate_system):
+@pytest.mark.parametrize("placement_method", ["vertex", "multiview"])
+def test_reconstruction_writes_private_handoff_without_detection(worker, monkeypatch, tmp_path, engine, coordinate_system, placement_method):
     import importlib
     work = write_artifact(tmp_path)
     reconstruct = Mock(return_value=artifacts.ReconstructionOutput(work / "model.glb", work / "cameras.json", {"photo.jpg": "image_000000.jpg"}, work / "model.glb", coordinate_system))
@@ -317,7 +351,7 @@ def test_reconstruction_writes_private_handoff_without_detection(worker, monkeyp
         monkeypatch.setattr(importlib.import_module(f"felslager_processing.engines.{engine}"), "reconstruct", reconstruct)
     detection = Mock(); monkeypatch.setattr(detection_runtime, "run_detection", detection)
     api = Mock(); monkeypatch.setattr(client, "request", api)
-    worker.process(job(tmp_path, engine=engine), "reconstruction")
+    worker.reconstruct_job(job(tmp_path, engine=engine))
     reconstruct.assert_called_once()
     detection.assert_not_called()
     artifact = json.loads((work / "artifact.json").read_text())
@@ -328,15 +362,16 @@ def test_reconstruction_writes_private_handoff_without_detection(worker, monkeyp
     assert (work / artifact["images"]).is_dir()
     assert artifact["engine"] == engine and artifact["version"] == 1
     assert not (tmp_path / "output").exists()
-    assert api.call_args.args == ("POST", "/worker/job/reconstructed")
+    api.assert_not_called()
     # The same detection consumer reads all three adapters' standardized output.
     def detect(*args, **kwargs):
         (args[5] / "project.json").write_text('{"hits": []}')
     detection.side_effect = detect
-    worker.process(job(tmp_path, "detection", engine), "detection")
+    worker.detect_job({**job(tmp_path, "detection", engine), "boltPlacementMethod": placement_method})
     assert detection.call_args.args[1] == work / artifact["images"]
     assert detection.call_args.args[4] == work / "reconstruction/cameras.json"
     assert detection.call_args.kwargs["coordinate_system"] == coordinate_system
+    assert detection.call_args.kwargs["placement_method"] == placement_method
     assert api.call_args.args == ("POST", "/worker/job/complete")
 
 
@@ -346,47 +381,12 @@ def test_detection_consumes_handoff_and_completes_private_output(worker, monkeyp
         (args[5] / "project.json").write_text('{"hits": []}')
     detection = Mock(side_effect=detect); monkeypatch.setattr(detection_runtime, "run_detection", detection)
     api = Mock(); monkeypatch.setattr(client, "request", api)
-    worker.process(job(tmp_path, "detection"), "detection")
+    worker.detect_job(job(tmp_path, "detection"))
     assert detection.call_args.args[3] == work / "model.glb"
     assert (tmp_path / "output/model.glb").read_bytes() == b"glb"
     assert (tmp_path / "output/project.json").is_file()
     assert api.call_args.args == ("POST", "/worker/job/complete")
     assert (work / "artifact.json").is_file()
-
-
-def test_process_rejects_unknown_engine(worker, monkeypatch, tmp_path):
-    odm = Mock(); monkeypatch.setattr(odm, "reconstruct", odm)
-    api = Mock(); monkeypatch.setattr(client, "request", api)
-    worker.process(job(tmp_path, engine="typo"), "reconstruction")
-    odm.assert_not_called()
-    assert api.call_args.args == ("POST", "/worker/job/fail")
-    assert "Unsupported reconstruction engine" in api.call_args.kwargs["json"]["error"]
-
-
-def test_api_supplies_lease_on_status_and_mutation(worker, monkeypatch):
-    client.ACTIVE_LEASE = "private-lease"
-    request = Mock(return_value=SimpleNamespace(status_code=200))
-    monkeypatch.setattr(requests, "request", request)
-    for method, path in [("GET", "/worker/job"), ("POST", "/worker/job/complete")]:
-        client.request(method, path)
-        assert request.call_args.kwargs["headers"]["X-Worker-Lease"] == "private-lease"
-
-
-def test_lost_lease_does_not_fail_another_workers_job(worker, monkeypatch, tmp_path):
-    monkeypatch.setattr(client, "check_cancelled", Mock(side_effect=worker.LeaseLost()))
-    api = Mock(); monkeypatch.setattr(client, "request", api)
-    worker.process(job(tmp_path), "reconstruction")
-    api.assert_not_called()
-    assert client.ACTIVE_LEASE is None
-
-
-def test_heartbeat_renews_during_blocking_work(worker, monkeypatch):
-    import threading
-    renewed = threading.Event()
-    monkeypatch.setenv("BOLT_HEARTBEAT_SECONDS", "0.01")
-    monkeypatch.setattr(client, "check_cancelled", lambda _: renewed.set())
-    with client.Heartbeat("job"):
-        assert renewed.wait(1)
 
 
 def test_detector_model_is_loaded_once(worker, monkeypatch, tmp_path):
@@ -429,33 +429,72 @@ def test_runtime_import_does_not_load_ml_or_engine_adapters(monkeypatch):
     subprocess.run([sys.executable, "-c", script], cwd=Path(__file__).resolve().parents[1], check=True)
 
 
-def test_heartbeat_uses_short_claim_lease(worker, monkeypatch):
-    from datetime import datetime, timedelta, timezone
-    import threading
-    renewed = threading.Event()
-    monkeypatch.setenv("BOLT_HEARTBEAT_SECONDS", "30")
-    monkeypatch.setattr(client, "check_cancelled", lambda _: renewed.set())
-    expiry = (datetime.now(timezone.utc) + timedelta(seconds=0.3)).isoformat()
-    with client.Heartbeat("job", expiry) as heartbeat:
-        assert 0 < heartbeat.interval <= 0.1
-        assert renewed.wait(0.2)
-
-
-@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf"])
-def test_heartbeat_rejects_invalid_intervals(worker, monkeypatch, value):
-    monkeypatch.setenv("BOLT_HEARTBEAT_SECONDS", value)
-    with pytest.raises(ValueError, match="positive and finite"):
-        client.Heartbeat("job")
-
-
-def test_lost_lease_cancels_nodeodm_task(worker, monkeypatch, tmp_path):
+def test_cancellation_cancels_nodeodm_task(worker, monkeypatch, tmp_path):
     images = tmp_path / "images"; images.mkdir()
     for name in ("a.jpg", "b.jpg"):
         (images / name).write_bytes(b"image")
-    monkeypatch.setattr(client, "check_cancelled", Mock(side_effect=[None, worker.LeaseLost()]))
+    monkeypatch.setattr(client, "check_cancelled", Mock(side_effect=[None, worker.JobCancelled()]))
     response = Mock(); response.json.return_value = {"uuid": "odm-task"}
     monkeypatch.setattr(requests, "post", Mock(return_value=response))
     cancel = Mock(); monkeypatch.setattr(odm, "cancel_task", cancel)
-    with pytest.raises(worker.LeaseLost):
+    with pytest.raises(worker.JobCancelled):
         odm.reconstruct(images, tmp_path / "work", lambda: client.check_cancelled("job"), lambda *args: client.report_progress("job", *args))
     cancel.assert_called_once_with("odm-task")
+
+
+@pytest.mark.parametrize('method', ['triangle', 'vertex', 'multiview'])
+def test_cached_detections_reposition_without_loading_detector(worker, monkeypatch, tmp_path, method):
+    images = tmp_path / 'images'; images.mkdir()
+    out = tmp_path / 'out'; out.mkdir()
+    cv2.imwrite(str(images / 'photo.jpg'), np.zeros((100, 100, 3), dtype=np.uint8))
+    cameras = tmp_path / 'reconstruction.json'; cameras.write_text(json.dumps(scene()))
+    cached = tmp_path / 'detections.json'
+    cached.write_text(json.dumps({'frames': [{'image': 'photo.jpg', 'detections': [
+        {'bbox_xyxy': [45, 45, 55, 55], 'confidence': .9, 'class_name': 'bolt'}]}]}))
+    monkeypatch.setattr(detection_runtime, 'get_detection_model', Mock(side_effect=AssertionError('Must not load YOLO')))
+    geometry = SimpleNamespace(vertices=np.array([[0., 0, 5], [1., 0, 5], [0., 1, 5]]), faces=np.array([[0, 1, 2]]), vertex_normals=np.array([[0., 0, -1]] * 3))
+    monkeypatch.setitem(sys.modules, 'trimesh', SimpleNamespace(load=Mock(return_value=geometry)))
+    detection_runtime.run_detection('job', images, tmp_path / 'weights', tmp_path / 'mesh.obj', cameras,
+        out, 'Wall', {'photo.jpg': 'image_000000.jpg'}, placement_method=method, cached_detections=cached)
+    project = json.loads((out / 'project.json').read_text())
+    assert project['positioning']['requestedMethod'] == method
+    assert project['hits']
+    assert (out / project['hits'][0]['crop']).is_file()
+    assert json.loads((out / 'detections.json').read_text())['frames'][0]['detections'][0]['confidence'] == .9
+    detection_runtime.get_detection_model.assert_not_called()
+
+
+def test_placement_job_reads_source_and_packages_into_own_output(worker, monkeypatch, tmp_path):
+    source = write_artifact(tmp_path)
+    (source / 'prepared').mkdir()
+    (source / 'telemetry').mkdir()
+    (source / 'telemetry/flight.srt').write_text('original telemetry')
+    own = tmp_path / 'child'; own.mkdir()
+    cached = tmp_path / 'detections.json'; cached.write_text('{"frames": []}')
+    def detect(*args, **kwargs):
+        assert args[1] == source / 'prepared'
+        assert kwargs['cached_detections'] == cached
+        (args[5] / 'project.json').write_text('{"hits": []}')
+    detector = Mock(side_effect=detect)
+    monkeypatch.setattr(detection_runtime, 'run_detection', detector)
+    monkeypatch.setattr(client, 'request', Mock())
+    value = {**job(tmp_path), 'sourceProcessingId': 'source', 'sourceWorkPath': str(source),
+             'workPath': str(own), 'detectionsPath': str(cached), 'boltPlacementMethod': 'multiview'}
+    worker.detect_job(value)
+    assert (tmp_path / 'output/model.glb').read_bytes() == b'glb'
+    assert (tmp_path / 'output/telemetry/flight.srt').read_text() == 'original telemetry'
+    assert (source / 'artifact.json').is_file()
+
+
+def test_cached_placement_rejects_missing_original_images(worker, monkeypatch, tmp_path):
+    images = tmp_path / 'images'; images.mkdir()
+    out = tmp_path / 'out'; out.mkdir()
+    cached = tmp_path / 'detections.json'
+    cached.write_text('{"frames": [{"image": "missing.jpg", "detections": []}]}')
+    cameras = tmp_path / 'cameras.json'; cameras.write_text(json.dumps(scene()))
+    monkeypatch.setitem(sys.modules, 'trimesh', SimpleNamespace(load=Mock(return_value=mesh(5))))
+    monkeypatch.setattr(detection_runtime, 'get_detection_model', Mock(side_effect=AssertionError('Must not load YOLO')))
+    with pytest.raises(ReconstructionError, match='Original detection images are missing'):
+        detection_runtime.run_detection('job', images, tmp_path / 'weights', tmp_path / 'mesh.obj', cameras,
+            out, 'Wall', {}, cached_detections=cached)
+    detection_runtime.get_detection_model.assert_not_called()

@@ -1,7 +1,6 @@
 """Prepare photos, video frames and telemetry from an original capture."""
 import hashlib
 from pathlib import Path
-import shutil
 
 from . import api as client
 from .artifacts import artifact_path
@@ -24,10 +23,10 @@ def prepare_capture(job: dict, source: Path, work: Path) -> Path:
         original = artifact_path(source, name)
         suffix = original.suffix.lower()
         if suffix in IMAGE_EXTENSIONS:
-            # Keep originals read-only; engines can modify their own input copies.
+            # Captures are mounted read-only at the same path on every worker.
             target = prepared / "photos" / name
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(original, target)
+            target.symlink_to(original.resolve())
             images.append(name)
         elif suffix in VIDEO_EXTENSIONS:
             videos.append((name, original))
@@ -61,6 +60,6 @@ def prepare_capture(job: dict, source: Path, work: Path) -> Path:
     for name, original in subtitles:
         target = telemetry / name
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(original, target)
+        target.symlink_to(original.resolve())
     return prepared
 

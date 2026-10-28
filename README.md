@@ -1,5 +1,10 @@
 # Felslager
 
+The [OpenAPI 3.1 specification](openapi.json) documents authentication, public
+filesystem access, reviews, captures, processing and private worker callbacks.
+The nonstandard HTTP `MOVE` operation is recorded as `x-move`; OpenAPI tools
+may omit it from generated clients. Replace the local server URL for your deployment.
+
 Public content reads are anonymous. Every provisioned user can upload, move and delete content. Accounts use Better Auth email/password authentication with sessions stored in SQLite.
 
 ## Setup
@@ -32,18 +37,23 @@ Run `npm test` to check auth, provisioning, persistence, content writes and file
 
 ## Reconstruction and detection workers
 
+To update and restart existing workers, run `npm run workers:restart`. It reuses
+the running containers’ Compose configuration. See [restart options](scripts/RESTART_WORKERS.md)
+for selected workers, restart-only mode and full dependency builds.
+
 The Python workers live under [workers/processing](workers/processing/README.md).
-Felslager coordinates reconstruction followed by detection through its queue.
+Felslager submits jobs to Prefect reconstruction deployments, which invoke the
+optional detection deployment. Prefect owns scheduling, execution state and logs.
 Each reconstruction engine and the YOLO detector run as separate processes or
 containers. Only detection installs PyTorch and loads the v3 weights. See
-[BOLT_JOBS.md](BOLT_JOBS.md) for the queue and private shared storage contract.
+[BOLT_JOBS.md](BOLT_JOBS.md) for the Prefect integration and private shared storage contract.
 Detector weights are tracked with Git LFS; run `git lfs install` and `git lfs pull`
 before starting the worker.
 
 ### Docker Compose
 
-Compose runs only the detection and reconstruction workers, plus NodeODM when
-selected. Felslager itself runs on the host using the [setup above](#setup):
+Compose runs a persistent Prefect server, the detection and reconstruction workers,
+and NodeODM when selected. Felslager itself runs on the host using the [setup above](#setup):
 
 ```sh
 npm ci
@@ -71,9 +81,21 @@ docker compose --env-file ../.env --profile odm --profile detection up --build -
 
 This starts detection, the ODM reconstruction worker and NodeODM. Profiles
 `meshroom` and `realityscan` enable their own engine containers; profiles can be
-combined. Without profiles no workers start. The `detection` profile is optional; omit it
+combined. Without profiles only Prefect starts. The `detection` profile is optional; omit it
 for reconstruction-only jobs. Select an engine in processing requests that has a running worker; requests
 default to ODM. NodeODM has no published host port.
+
+The Prefect dashboard is available at **http://127.0.0.1:4200** (override
+`PREFECT_PORT` in `.env`). Workers use its internal Compose API address. Job IDs
+appear in flow names, and Prefect links detection runs to their reconstruction parent.
+Continue starting and cancelling jobs through Felslager. See
+[Prefect execution](workers/processing/README.md#prefect-execution) for deployment names and
+cancellation behavior. Stop old queue workers and restart unfinished legacy jobs
+when upgrading. Capture snapshots are not introduced.
+
+Processing scratch under `PROCESSING_DIR/<job-id>/artifacts` and
+`PROCESSING_DIR/<job-id>/outputs` is retained for manual cleanup. Remove it only
+after the run has finished; preserve captures, job metadata and final results.
 
 Workers connect to `FELSLAGER_JOBS_URL`, defaulting to
 `http://host.docker.internal:3001/api/processing`. Compose maps that hostname to
@@ -87,9 +109,10 @@ same absolute paths used by the host API. Authentication, reviews and published
 content stay on the host and are not mounted into workers. Back up the host data
 paths separately from Docker engine-state volumes.
 
-Only NodeODM task data and RealityScan login/Wine state use named volumes. To
+Prefect run history, NodeODM task data and RealityScan login/Wine state use named volumes. To
 place those on another disk, set `FELSLAGER_STORAGE_DIR`, create its
-`realityscan-state` and `nodeodm-data` directories owned by UID 1000, and add
+`realityscan-state` and `nodeodm-data` directories owned by UID 1000, plus a
+`prefect-data` directory for the Prefect server, and add
 `-f compose.storage.yaml` after `-f compose.yaml` before first creating the volumes.
 Choose `PROCESSING_DIR` and `CAPTURE_DIR` directly to put shared data on another
 disk. Do not use `docker compose --env-file ../.env down --volumes` unless deliberately deleting
@@ -115,6 +138,9 @@ Captures accept any file type; workers process images, videos and SRT files; the
 file count. The entry does not need to be published first. Processing reads the capture files when preparing a run, supports ODM, Meshroom
 and RealityScan, and accepts
 `runBoltDetection: false` to reconstruct without YOLO.
+Set `boltPlacementMethod` to `triangle` (default), `vertex` (legacy dashboard
+snapping), or `multiview` (experimental triangulation with triangle fallback)
+when starting a processing run. See the capture API for limits and diagnostics.
 
 Use `/api/captures` for uploads and `/api/processing` for starting, monitoring,
 cancelling and downloading results. See [SOURCE_LIBRARY.md](SOURCE_LIBRARY.md)

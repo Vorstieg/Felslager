@@ -1,3 +1,4 @@
+import { prefectServer } from './helpers/prefect.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import fs from 'node:fs/promises';
@@ -10,10 +11,11 @@ import { createProcessingRouter } from '../processing.js';
 import { createProcessingResults } from '../processing-results.js';
 
 async function fixture(t, overrides = {}) {
+  const prefect = await prefectServer(t);
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'fels-processing-'));
   const config = { databasePath: path.join(root, 'auth.sqlite'), dataDir: path.join(root, 'content'),
     captureDir: path.join(root, 'captures'), processingDir: path.join(root, 'processing'),
-    boltWorkerToken: 'test-worker', ...overrides };
+    boltWorkerToken: 'test-worker', prefectApiUrl: prefect.url, ...overrides };
   await fs.mkdir(config.dataDir);
   const captures = createCaptureLibrary(config), results = createProcessingResults(config);
   const auth = { api: { getSession: async ({ headers }) => ({ headers: new Headers(),
@@ -40,11 +42,36 @@ async function fixture(t, overrides = {}) {
   });
   const start = (captureId, options = {}) => request('/api/processing', { method: 'POST', body: { captureId, ...options } });
   const worker = (route, job, method = 'POST') => request('/api/processing/worker' + route, {
-    method, headers: { Authorization: 'Bearer test-worker', ...(job ? { 'X-Worker-Lease': job.leaseToken } : {}) },
+    method, headers: { Authorization: 'Bearer test-worker', ...(job ? { 'X-Processing-Run': job.flowRunId } : {}) },
   });
-  const claim = async (role = 'reconstruction') => worker(`/next?role=${role}&engine=odm`, null, 'GET');
-  return { config, request, captures, results, capture, upload, start, worker, claim, restart };
+  const claim = async () => {
+    const run = [...prefect.runs.values()].find(r => r.state.type === 'SCHEDULED');
+    prefect.state(run.id, 'RUNNING');
+    const response = await request(`/api/processing/worker/${run.parameters.job_id}`, {
+      headers: { Authorization: 'Bearer test-worker', 'X-Processing-Run': run.id } });
+    const job = await response.json();
+    return { json: async () => ({ ...job, flowRunId: run.id }) };
+  };
+  return { config, request, captures, results, capture, upload, start, worker, claim, restart, prefect };
 }
+
+test('bolt placement selection is validated, persisted and passed to workers', async (t) => {
+  const f = await fixture(t), capture = await f.capture();
+  for (const boltPlacementMethod of [null, '', 'snap', 1, {}]) {
+    assert.equal((await f.start(capture.id, { boltPlacementMethod })).status, 400);
+  }
+  const response = await f.start(capture.id, { boltPlacementMethod: 'vertex' });
+  assert.equal(response.status, 202);
+  const job = await response.json();
+  assert.equal(job.boltPlacementMethod, 'vertex');
+  f.restart();
+  assert.equal((await (await f.request(`/api/processing/${job.id}`)).json()).boltPlacementMethod, 'vertex');
+  assert.equal((await (await f.claim()).json()).boltPlacementMethod, 'vertex');
+  assert.equal((await (await f.start(capture.id)).json()).boltPlacementMethod, 'triangle');
+  const multi = await f.start(capture.id, { boltPlacementMethod: 'multiview' });
+  assert.equal(multi.status, 202);
+  assert.equal((await multi.json()).boltPlacementMethod, 'multiview');
+});
 
 test('processing uses live capture files and permits later uploads', async (t) => {
   const f = await fixture(t), capture = await f.capture();
@@ -71,16 +98,17 @@ test('reconstruction-only completion returns immutable downloadable results and 
   const job = await (await f.start(capture.id, { runBoltDetection: false })).json();
   assert.equal((await f.request(`/api/processing/${job.id}/results`)).status, 409);
   const claim = await (await f.claim()).json();
-  assert.equal((await f.worker(`/${job.id}/reconstructed`, claim)).status, 409);
   await fs.mkdir(claim.outputAbsolutePath, { recursive: true });
   await fs.writeFile(path.join(claim.outputAbsolutePath, 'model.glb'), 'model-bytes');
   await fs.writeFile(path.join(claim.outputAbsolutePath, 'project.json'), JSON.stringify({ hits: [], cameras: {}, coordinateSystem: 'Z_UP' }));
   assert.equal((await f.worker(`/${job.id}/complete`, claim)).status, 200);
-  assert.equal((await f.claim('detection')).status, 204);
   const manifest = await (await f.request(`/api/processing/${job.id}/results`)).json();
   assert.equal(manifest.captureId, capture.id);
   const file = manifest.files.find((file) => file.path === 'model.glb');
   assert.equal(await (await f.request(file.url)).text(), 'model-bytes');
+  assert.ok((await fs.stat(claim.workPath)).isDirectory());
+  assert.ok((await fs.stat(claim.outputAbsolutePath)).isDirectory());
+  await fs.mkdir(claim.outputAbsolutePath, { recursive: true });
   await fs.writeFile(path.join(claim.outputAbsolutePath, 'model.glb'), 'changed-worker-output');
   assert.equal(await (await f.request(file.url)).text(), 'model-bytes');
   const stored = JSON.parse(await fs.readFile(path.join(f.config.processingDir, job.id, 'job.json')));
@@ -120,7 +148,7 @@ test('cancellation prevents reconstruction-only completion from exposing results
   const active = await (await f.start(capture.id, { runBoltDetection: false })).json();
   const claimed = await (await f.claim()).json();
   assert.equal((await f.request(`/api/processing/${active.id}/cancel`, { method: 'POST' })).status, 202);
-  assert.equal((await (await f.worker(`/${active.id}/complete`, claimed)).json()).status, 'cancelled');
+  assert.equal((await f.worker(`/${active.id}/complete`, claimed)).status, 409);
   assert.equal((await f.request(`/api/processing/${active.id}/results`)).status, 409);
 });
 
@@ -131,14 +159,6 @@ for (const runBoltDetection of [false, true]) {
     await f.upload(capture.id, 'video.mp4');
     const job = await (await f.start(capture.id, { runBoltDetection })).json();
     let claimed = await (await f.claim()).json();
-    if (runBoltDetection) {
-      await fs.writeFile(path.join(claimed.workPath, 'model.glb'), 'mesh');
-      await fs.writeFile(path.join(claimed.workPath, 'cameras.json'), '{}');
-      await fs.writeFile(path.join(claimed.workPath, 'artifact.json'), JSON.stringify({ version: 1, engine: 'odm',
-        model: 'model.glb', detectionMesh: 'model.glb', reconstruction: 'cameras.json', names: {}, coordinateSystem: 'Z_UP' }));
-      assert.equal((await f.worker(`/${job.id}/reconstructed`, claimed)).status, 200);
-      claimed = await (await f.claim('detection')).json();
-    }
     await fs.mkdir(claimed.outputAbsolutePath, { recursive: true });
     await fs.writeFile(path.join(claimed.outputAbsolutePath, 'model.glb'), 'committed-model');
     await fs.writeFile(path.join(claimed.outputAbsolutePath, 'project.json'), JSON.stringify({ hits: [], cameras: {}, coordinateSystem: 'Z_UP' }));
@@ -146,17 +166,14 @@ for (const runBoltDetection of [false, true]) {
     const stored = JSON.parse(await fs.readFile(filename));
     // Crash point: result is installed, but job.json still says processing.
     const result = await f.results.importResult(stored, claimed.outputAbsolutePath);
-    stored.leaseExpiresAt = '2000-01-01T00:00:00.000Z';
     await fs.writeFile(filename, JSON.stringify(stored));
     f.restart();
-    assert.equal((await f.claim()).status, 204);
-    assert.equal((await f.claim('detection')).status, 204);
     const recovered = await (await f.request(`/api/processing/${job.id}`)).json();
     assert.equal(recovered.status, 'completed');
     const persisted = JSON.parse(await fs.readFile(filename));
-    assert.equal(persisted.completedAt, result.completedAt);
-    assert.equal(persisted.leaseToken, undefined);
-    assert.equal((await f.worker(`/${job.id}/fail`, claimed)).status, 409);
+    assert.equal(persisted.flowRunId, claimed.flowRunId);
+    assert.ok(result.completedAt);
+    assert.equal((await f.worker(`/${job.id}/complete`, claimed)).status, 409);
     const manifest = await (await f.request(`/api/processing/${job.id}/results`)).json();
     const model = manifest.files.find((file) => file.path === 'model.glb');
     assert.equal(await (await f.request(model.url)).text(), 'committed-model');
@@ -193,4 +210,35 @@ test('job creation and capture downloads do not scan unrelated capture files', a
   const job = await started.json();
   await f.request(`/api/processing/${job.id}/cancel`, { method: 'POST' });
   assert.equal((await f.request(`/api/captures/${capture.id}`, { method: 'DELETE' })).status, 204);
+});
+
+test('placement reruns reuse immutable detections and reconstruction, with independent results', async (t) => {
+  const f = await fixture(t), capture = await f.capture();
+  const source = await (await f.start(capture.id)).json();
+  assert.equal((await f.request(`/api/processing/${source.id}/placement`, { method: 'POST', body: { boltPlacementMethod: 'vertex' } })).status, 409);
+  const claim = await (await f.claim()).json();
+  await fs.writeFile(path.join(claim.workPath, 'artifact.json'), '{}');
+  await fs.mkdir(claim.outputAbsolutePath, { recursive: true });
+  for (const [name, value] of Object.entries({ 'model.glb': 'model', 'project.json': '{"hits": [], "cameras": {}, "coordinateSystem": "Z_UP"}', 'detections.json': '{"frames": []}' }))
+    await fs.writeFile(path.join(claim.outputAbsolutePath, name), value);
+  assert.equal((await f.worker(`/${source.id}/complete`, claim)).status, 200);
+  const rerun = method => f.request(`/api/processing/${source.id}/placement`, { method: 'POST', body: { boltPlacementMethod: method } });
+  assert.equal((await rerun('unknown')).status, 400);
+  assert.equal((await f.request(`/api/processing/${source.id}/placement`, { method: 'POST', headers: { 'x-no-session': '1' }, body: { boltPlacementMethod: 'vertex' } })).status, 401);
+  for (const method of ['triangle', 'vertex', 'multiview']) {
+    const response = await rerun(method);
+    assert.equal(response.status, 202);
+    const child = await response.json();
+    assert.equal(child.sourceProcessingId, source.id);
+    assert.equal(child.boltPlacementMethod, method);
+    assert.equal(f.prefect.runs.get(child.flowRunId).deployment, 'detection');
+    const worker = await (await f.claim()).json();
+    assert.equal(worker.sourceWorkPath, claim.workPath);
+    assert.notEqual(worker.workPath, claim.workPath);
+    assert.notEqual(worker.outputAbsolutePath, claim.outputAbsolutePath);
+    assert.equal(await fs.readFile(worker.detectionsPath, 'utf8'), '{"frames": []}');
+  }
+  assert.equal((await f.request(`/api/processing/${source.id}`, { method: 'DELETE' })).status, 409);
+  await fs.rm(path.join(claim.workPath, 'artifact.json'));
+  assert.equal((await rerun('triangle')).status, 409);
 });

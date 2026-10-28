@@ -1,3 +1,4 @@
+import { prefectServer } from './helpers/prefect.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
@@ -11,10 +12,11 @@ import { createProcessingRouter } from '../processing.js';
 import { createProcessingResults } from '../processing-results.js';
 
 async function fixture(t, overrides = {}) {
+  const prefect = await prefectServer(t);
   const directory = await mkdtemp(path.join(tmpdir(), 'fels-captures-'));
   const config = { dataDir: path.join(directory, 'content'), databasePath: path.join(directory, 'auth.sqlite'),
     captureDir: path.join(directory, 'captures'), processingDir: path.join(directory, 'jobs'),
-    boltWorkerToken: 'worker-secret', captureMaxDatasetBytes: 100, ...overrides };
+    boltWorkerToken: 'worker-secret', prefectApiUrl: prefect.url, captureMaxDatasetBytes: 100, ...overrides };
   await mkdir(config.dataDir);
   const library = createCaptureLibrary(config);
   const auth = { api: { getSession: async ({ headers }) => ({ headers: new Headers(),
@@ -46,7 +48,7 @@ async function fixture(t, overrides = {}) {
     for (const name of ['nested/a.jpg', 'b.tiff']) assert.equal((await upload(capture.id, name)).status, 201);
     return library.get(capture.id);
   };
-  return { directory, config, library, request, create, upload, ready };
+  return { directory, config, library, request, create, upload, ready, prefect };
 }
 
 test('originals stay private, retain their bytes, and filenames cannot be replaced', async (t) => {
@@ -93,17 +95,16 @@ test('multiple jobs reuse a survey without copies; live references prevent delet
   const second = await (await job(capture.id, 'meshroom')).json();
   assert.equal(first.status, 'queued');
   assert.deepEqual(await readdir(path.join(f.config.processingDir, first.id)), ['job.json']);
-  const claim = await (await f.request('/api/processing/worker/next?role=reconstruction&engine=odm', {
-    headers: { Authorization: 'Bearer worker-secret' },
+  f.prefect.state(first.flowRunId, 'RUNNING');
+  const claim = await (await f.request(`/api/processing/worker/${first.id}`, {
+    headers: { Authorization: 'Bearer worker-secret', 'X-Processing-Run': first.flowRunId },
   })).json();
   assert.equal(claim.inputPath, f.library.filesPath(capture.id));
   assert.equal(await readFile(path.join(claim.inputPath, 'nested/a.jpg'), 'utf8'), 'image');
   const restarted = createCaptureLibrary(f.config);
   await assert.rejects(restarted.remove(capture.id), /CAPTURE_IN_USE/);
   assert.equal((await f.request(`/api/captures/${capture.id}`, { method: 'DELETE' })).status, 409);
-  assert.equal((await f.request(`/api/processing/worker/${first.id}/fail`, { method: 'POST',
-    headers: { Authorization: 'Bearer worker-secret', 'X-Worker-Lease': claim.leaseToken }, body: {},
-  })).status, 200);
+  f.prefect.state(first.flowRunId, 'FAILED');
   assert.equal((await f.request(`/api/captures/${capture.id}`, { method: 'DELETE' })).status, 409);
   await f.request(`/api/processing/${second.id}/cancel`, { method: 'POST' });
   assert.equal((await f.request(`/api/captures/${capture.id}`, { method: 'DELETE' })).status, 204);

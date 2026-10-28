@@ -11,7 +11,8 @@ WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 COPY felslager_processing ./felslager_processing
 COPY presets ./presets
-RUN uv sync --locked --no-dev --no-cache \
+ENV UV_HTTP_TIMEOUT=600 UV_CONCURRENT_DOWNLOADS=4 UV_CACHE_DIR=/var/cache/uv
+RUN --mount=type=cache,target=/var/cache/uv uv sync --locked --no-dev \
     && useradd --uid 1000 --create-home worker \
     && mkdir -p /srv/felslager/content /srv/felslager-private/bolt-jobs \
     && chown -R worker:worker /srv/felslager /srv/felslager-private
@@ -23,7 +24,7 @@ FROM reconstruction AS detection
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends libgl1 \
     && rm -rf /var/lib/apt/lists/*
-RUN uv sync --locked --no-dev --extra detection --no-cache
+RUN --mount=type=cache,target=/var/cache/uv uv sync --locked --no-dev --extra detection
 COPY models/bolt_detector_v3_yolo26s.pt ./models/bolt_detector_v3_yolo26s.pt
 RUN python -c "from pathlib import Path; p=Path('models/bolt_detector_v3_yolo26s.pt'); assert p.stat().st_size > 1000000, 'Run git lfs pull before building the detection image'"
 ENV BOLT_MODEL_PATH=/app/models/bolt_detector_v3_yolo26s.pt

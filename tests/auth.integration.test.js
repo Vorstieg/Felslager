@@ -1,3 +1,4 @@
+import { prefectServer } from './helpers/prefect.js';
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createServer, request as httpRequest } from "node:http";
@@ -12,6 +13,7 @@ const password = "Correct horse battery staple!";
 const origin = "http://localhost:5173";
 
 async function fixture(t) {
+  const prefect = await prefectServer(t);
   const directory = await mkdtemp(path.join(tmpdir(), "felslager-auth-"));
   const dataDir = path.join(directory, "content");
   await mkdir(dataDir);
@@ -30,6 +32,7 @@ async function fixture(t) {
     production: false,
     trustProxy: false,
     boltWorkerToken: "integration-worker-secret",
+    prefectApiUrl: prefect.url,
   };
   const dependencies = {
     optimizeGlb: async (...args) => {
@@ -87,6 +90,7 @@ async function fixture(t) {
     return { ...user, email, cookie, response };
   };
   return {
+    prefect,
     request,
     seed,
     optimized,
@@ -184,30 +188,16 @@ test("separate reconstruction and detection services return private results for 
     body: { captureId: source.id, engine: 'meshroom', name: 'Test wall' } });
   assert.equal(created.status, 202);
   const job = await created.json();
-  const worker = (route, { lease, method = "GET" } = {}) => fetch(`${f.baseURL}/api/processing/worker${route}`, {
+  const worker = (route, { run = job.flowRunId, method = "GET" } = {}) => fetch(`${f.baseURL}/api/processing/worker${route}`, {
     method,
     headers: {
       Authorization: `Bearer ${f.config.boltWorkerToken}`,
-      ...(lease ? { "X-Worker-Lease": lease } : {}),
+      "X-Processing-Run": run,
     },
   });
-  assert.equal((await worker("/next?role=reconstruction&engine=odm")).status, 204);
-  const reconstruction = await (await worker("/next?role=reconstruction&engine=meshroom")).json();
-  assert.equal(reconstruction.id, job.id);
-  assert.equal(reconstruction.phase, "reconstruction");
-  await mkdir(reconstruction.workPath, { recursive: true });
-  await writeFile(path.join(reconstruction.workPath, "model.glb"), "reconstructed model");
-  await writeFile(path.join(reconstruction.workPath, "cameras.json"), JSON.stringify({ cameras: {}, shots: {} }));
-  await writeFile(path.join(reconstruction.workPath, "artifact.json"), JSON.stringify({
-    version: 1, engine: "meshroom", model: "model.glb", detectionMesh: "model.glb",
-    reconstruction: "cameras.json", coordinateSystem: "Y_UP", names: { "a.jpg": "image_000000.jpg", "b.jpg": "image_000001.jpg" },
-  }));
-  const handedOff = await worker(`/${job.id}/reconstructed`, { method: "POST", lease: reconstruction.leaseToken });
-  assert.equal(handedOff.status, 200, await handedOff.clone().text());
-  assert.equal((await handedOff.json()).phase, "detection");
-  const detection = await (await worker("/next?role=detection")).json();
+  f.prefect.state(job.flowRunId, 'RUNNING');
+  const detection = await (await worker(`/${job.id}`)).json();
   assert.equal(detection.id, job.id);
-  assert.equal(detection.phase, "detection");
   assert.ok(!detection.outputAbsolutePath.startsWith(f.dataDir + path.sep));
   const publicPath = `/api/fs/${detection.entryPath}`;
   assert.equal((await f.request(`${publicPath}/model.glb`)).status, 404);
@@ -220,8 +210,8 @@ test("separate reconstruction and detection services return private results for 
   const modelBytes = Buffer.from(await new NodeIO().writeBinary(modelDocument));
   await writeFile(path.join(detection.outputAbsolutePath, "model.glb"), modelBytes);
   await writeFile(path.join(detection.outputAbsolutePath, "project.json"), JSON.stringify({ name: "Test wall", hits: [], cameras: {}, coordinateSystem: "Y_UP" }));
-  await expectCode(await worker(`/${job.id}/complete`, { method: "POST", lease: reconstruction.leaseToken }), 409, "STALE_WORKER_LEASE");
-  const completed = await worker(`/${job.id}/complete`, { method: "POST", lease: detection.leaseToken });
+  await expectCode(await worker(`/${job.id}/complete`, { method: "POST", run: "stale-run" }), 409, "PROCESSING_RUN_INACTIVE");
+  const completed = await worker(`/${job.id}/complete`, { method: "POST", run: job.flowRunId });
   assert.equal(completed.status, 200, await completed.clone().text());
   assert.equal((await completed.json()).status, "completed");
   assert.equal((await f.request(`${publicPath}/model.glb`)).status, 404);

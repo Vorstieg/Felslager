@@ -10,7 +10,7 @@ import zipfile
 import requests
 
 from ..artifacts import ReconstructionOutput
-from ..errors import ReconstructionError, JobCancelled, LeaseLost
+from ..errors import ReconstructionError, JobCancelled
 from ..reconstruction import load_cameras
 
 LOG = logging.getLogger("felslager-worker")
@@ -93,7 +93,7 @@ def reconstruct(images: Path, out: Path, check_cancelled, progress) -> Reconstru
         progress("downloading", 76)
         glb, reconstruction, mesh = download_reconstruction(task_id, out)
         return ReconstructionOutput(glb, reconstruction, names, mesh, "Z_UP")
-    except (JobCancelled, LeaseLost, KeyboardInterrupt):
+    except (JobCancelled, KeyboardInterrupt):
         cancel_task(task_id)
         raise
 

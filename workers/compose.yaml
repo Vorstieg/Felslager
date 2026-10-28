@@ -6,8 +6,12 @@ x-worker: &worker
   environment: &worker-env
     FELSLAGER_JOBS_URL: ${FELSLAGER_JOBS_URL:-http://host.docker.internal:3001/api/processing}
     BOLT_WORKER_TOKEN: ${BOLT_WORKER_TOKEN:?Set BOLT_WORKER_TOKEN in .env}
-    BOLT_POLL_SECONDS: ${BOLT_POLL_SECONDS:-5}
-    BOLT_HEARTBEAT_SECONDS: ${BOLT_HEARTBEAT_SECONDS:-10}
+    PREFECT_API_URL: http://prefect-server:4200/api
+    PREFECT_SERVER_ALLOW_EPHEMERAL_MODE: "false"
+    PREFECT_LOGGING_EXTRA_LOGGERS: felslager-worker
+  depends_on:
+    prefect-server:
+      condition: service_healthy
   extra_hosts:
     - "host.docker.internal:host-gateway"
   volumes:
@@ -26,6 +30,25 @@ x-worker: &worker
         create_host_path: false
 
 services:
+  prefect-server:
+    image: prefecthq/prefect:3.8.8-python3.10
+    restart: unless-stopped
+    command: ["prefect", "server", "start", "--host", "0.0.0.0"]
+    environment:
+      PREFECT_HOME: /var/lib/prefect
+      PREFECT_SERVER_ANALYTICS_ENABLED: "false"
+      PREFECT_UI_API_URL: http://127.0.0.1:${PREFECT_PORT:-4200}/api
+    ports:
+      - "127.0.0.1:${PREFECT_PORT:-4200}:4200"
+    volumes:
+      - prefect-data:/var/lib/prefect
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4200/api/health', timeout=5)"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 20s
+
   worker-detection:
     <<: *worker
     profiles: [detection]
@@ -45,7 +68,10 @@ services:
       NODEODM_URL: http://nodeodm:3000
     command: ["--role", "reconstruction", "--engine", "odm"]
     depends_on:
-      - nodeodm
+      prefect-server:
+        condition: service_healthy
+      nodeodm:
+        condition: service_started
 
   nodeodm:
     profiles: [odm]
@@ -93,5 +119,6 @@ services:
     command: ["--role", "reconstruction", "--engine", "realityscan"]
 
 volumes:
+  prefect-data:
   nodeodm-data:
   realityscan-state:

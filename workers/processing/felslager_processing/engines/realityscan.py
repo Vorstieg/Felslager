@@ -5,6 +5,7 @@ and use local Z-up coordinates without a scene transform for both exports.
 """
 from __future__ import annotations
 
+import math
 import json
 import os
 import shutil
@@ -80,6 +81,67 @@ def convert_cameras(folder: Path, names: dict[str, str]) -> dict:
         raise ReconstructionError('RealityScan returned invalid COLMAP text camera data') from error
 
 
+# Native algorithm IDs: https://dev.epicgames.com/documentation/realityscan/process-ids
+OPERATIONS = {
+    65536: 'Importing images', 65537: 'Aligning images', 65538: 'Aligning images',
+    65539: 'Detecting features', 77824: 'Matching images', 77840: 'Aligning cameras',
+    8208: 'Calculating depth maps', 8240: 'Meshing', 8242: 'Clustering',
+    20561: 'Reconstructing mesh', 7: 'Texturing', 20742: 'Filling textures',
+    20533: 'Saving project', 20534: 'Saving project',
+    6: 'Exporting model', 21876: 'Exporting model', 20576: 'Exporting cameras',
+    **{key: 'Unwrapping mesh' for key in range(20737, 20742)},
+}
+# Only top-level commands have a useful relationship to whole-job progress.
+# Nested operations report their own percentage without advancing the parent.
+PROGRESS_RANGES = {65536: (5, 7), 65537: (7, 25), 65538: (7, 25),
+                   20561: (25, 60), 7: (60, 70), 6: (70, 73),
+                   21876: (70, 73), 20576: (73, 74)}
+
+
+class RealityScanProgress:
+    """Read appended complete records; tolerate a missing file and partial writes."""
+
+    def __init__(self, path, progress):
+        self.path, self.progress = path, progress
+        self.offset = 0
+        self.overall = 5
+        self.last = None
+
+    def __call__(self):
+        try:
+            with self.path.open('rb') as stream:
+                if self.path.stat().st_size < self.offset:
+                    self.offset = 0
+                stream.seek(self.offset)
+                latest = None
+                for line in stream:
+                    if not line.endswith(b'\n'):
+                        break
+                    self.offset = stream.tell()
+                    try:
+                        algorithm, fraction, elapsed, remaining, event = line.decode().split()
+                        algorithm = int(algorithm)
+                        fraction, elapsed, remaining = map(float, (fraction, elapsed, remaining))
+                        if (algorithm == 0 or event not in {'#started', '#progress', '#timeout', '#completed'}
+                                or not all(math.isfinite(v) for v in (fraction, elapsed, remaining))
+                                or not 0 <= fraction <= 1 or min(elapsed, remaining) < 0):
+                            continue
+                    except (ValueError, UnicodeError):
+                        continue
+                    if algorithm in PROGRESS_RANGES:
+                        start, end = PROGRESS_RANGES[algorithm]
+                        self.overall = max(self.overall, round(start + (end - start) * fraction))
+                    latest = dict(operation=OPERATIONS.get(algorithm, f'RealityScan operation {algorithm}'),
+                                  operationProgress=round(fraction * 100),
+                                  operationElapsedSeconds=round(elapsed),
+                                  operationRemainingSeconds=round(remaining))
+        except FileNotFoundError:
+            return
+        if latest is not None and latest != self.last:
+            self.progress('reconstructing', self.overall, None, None, latest)
+            self.last = latest
+
+
 def reconstruct(images: Path, out: Path, check_cancelled, progress):
     import trimesh
 
@@ -103,18 +165,23 @@ def reconstruct(images: Path, out: Path, check_cancelled, progress):
         check_cancelled()
         name = f'image_{index:06d}{source.suffix.lower()}'
         names[source.relative_to(images).as_posix()] = name
-        # Copy: RealityScan can write sidecars beside inputs.
-        shutil.copy2(source, staged / name)
+        # Sidecars belong in this writable staging folder; image targets remain
+        # on the read-only capture mount. Resolve before the handoff is moved.
+        (staged / name).symlink_to(source.resolve())
     registration = out / 'registration'
     registration.mkdir()
     crash_reports = out / 'crash-reports'
     crash_reports.mkdir()
     mesh = out / 'model.obj'
+    progress_file = out / 'realityscan-progress.txt'
+    progress_file.unlink(missing_ok=True)
+    monitor = RealityScanProgress(progress_file, progress)
     progress('reconstructing', 5)
     # Suppress interactive warnings in unattended containers, retaining crash
     # reports in the private job directory for administrator diagnostics.
     command = [executable, '-silent', wine_path(crash_reports),
-               '-headless', '-set', 'appQuitOnError=true', '-newScene',
+               '-headless', '-set', 'appQuitOnError=true',
+               '-writeProgress', wine_path(progress_file), '2', '-newScene',
                '-addFolder', wine_path(staged), '-align', '-selectMaximalComponent',
                '-save', wine_path(out / 'project.rsproj'),
                '-setReconstructionRegionAuto', '-calculateNormalModel', '-calculateTexture',
@@ -123,7 +190,7 @@ def reconstruct(images: Path, out: Path, check_cancelled, progress):
                '-exportRegistration', wine_path(registration / 'registration.txt'), wine_path(presets[1]),
                '-save', wine_path(out / 'project.rsproj'), '-quit']
     try:
-        run_batch(command, out / 'realityscan.log', check_cancelled)
+        run_batch(command, out / 'realityscan.log', check_cancelled, poll=monitor)
     except ReconstructionError as error:
         raise ReconstructionError(str(error).replace('Meshroom', 'RealityScan')) from error
     check_cancelled()

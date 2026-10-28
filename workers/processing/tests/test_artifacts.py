@@ -23,10 +23,13 @@ def output(tmp_path):
 
 def test_bundle_has_fixed_paths_normalized_cameras_and_original_image_bytes(tmp_path):
     work, images, result = output(tmp_path)
+    original_inode = result.model.stat().st_ino
     artifact = publish_artifacts(work, result, images, 'odm')
     assert json.loads((work / 'artifact.json').read_text()) == artifact
     assert artifact['model'] == artifact['detectionMesh'] == 'reconstruction/model.glb'
     assert (work / artifact['model']).read_bytes() == b'model'
+    assert (work / artifact['model']).stat().st_ino == original_inode
+    assert not result.model.exists()
     assert isinstance(json.loads((work / artifact['reconstruction']).read_text()), dict)
     assert (work / artifact['images'] / 'photo.jpg').read_bytes() == b'photo'
     assert not images.exists()
@@ -38,7 +41,8 @@ def test_matching_obj_is_preserved_separately_from_textured_glb(tmp_path):
     result = ReconstructionOutput(result.model, result.cameras, result.names, mesh, result.coordinate_system)
     artifact = publish_artifacts(work, result, images, 'odm')
     assert artifact['detectionMesh'] == 'reconstruction/detection-mesh.obj'
-    assert (work / artifact['detectionMesh']).read_bytes() == mesh.read_bytes()
+    assert (work / artifact['detectionMesh']).read_text() == 'v 0 0 0'
+    assert not mesh.exists()
 
 
 def test_invalid_calibration_does_not_commit_handoff(tmp_path):
@@ -56,3 +60,29 @@ def test_engine_outputs_cannot_escape_private_work_directory(tmp_path):
     with pytest.raises(ReconstructionError, match='outside'):
         publish_artifacts(work, result, images, 'odm')
     assert not (work / 'artifact.json').exists()
+
+
+def test_linked_capture_survives_handoff_move_and_scratch_cleanup(tmp_path, monkeypatch):
+    from felslager_processing import capture
+    import shutil
+
+    work, images, result = output(tmp_path)
+    shutil.rmtree(images)
+    source = tmp_path / 'capture'
+    (source / 'nested').mkdir(parents=True)
+    for name in ('one.jpg', 'two.jpg'):
+        (source / 'nested' / name).write_bytes(b'original photo')
+    (source / 'flight.srt').write_text('telemetry')
+    monkeypatch.setattr(capture.client, 'check_cancelled', lambda _: None)
+    images = capture.prepare_capture({'id': 'job'}, source, work)
+    photo = images / 'photos/nested/one.jpg'
+    assert photo.is_symlink()
+    assert photo.resolve() == source / 'nested/one.jpg'
+    assert (work / 'telemetry/flight.srt').is_symlink()
+    artifact = publish_artifacts(work, result, images, 'meshroom')
+    moved_photo = work / artifact['images'] / 'photos/nested/one.jpg'
+    assert moved_photo.is_symlink()
+    assert moved_photo.read_bytes() == b'original photo'
+    shutil.rmtree(work)
+    assert (source / 'nested/one.jpg').read_bytes() == b'original photo'
+    assert (source / 'flight.srt').read_text() == 'telemetry'

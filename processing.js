@@ -4,47 +4,37 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fromNodeHeaders } from 'better-auth/node';
 import { relativePath, privateRoot, atomicJSON } from './storage-utils.js';
+import { createPrefect, processingState } from './prefect.js';
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export function createProcessingRouter(config, auth, { captures, results }) {
   const directory = privateRoot(config, 'processingDir', 'processing');
   const router = express.Router();
   const jobDir = (id) => path.join(directory, id);
+  const prefect = createPrefect(config);
   const read = async (id) => {
     if (!uuid.test(id)) throw Object.assign(new Error('JOB_NOT_FOUND'), { status: 404 });
-    try {
-      const job = JSON.parse(await fs.promises.readFile(path.join(jobDir(id), 'job.json'), 'utf8'));
-      // Result installation is the commit point. Repair a crash before the job status was saved.
-      if (job.status === 'processing') {
-        const result = await results.find(job);
-        if (result && result.attempt === job.leaseToken) {
-          completed(job, result);
-          await save(job);
-        }
-      }
-      return job;
-    } catch (error) { if (error.code === 'ENOENT') throw Object.assign(new Error('JOB_NOT_FOUND'), { status: 404 }); throw error; }
+    let job;
+    try { job = JSON.parse(await fs.promises.readFile(path.join(jobDir(id), 'job.json'), 'utf8')); }
+    catch (error) { if (error.code === 'ENOENT') throw Object.assign(new Error('JOB_NOT_FOUND'), { status: 404 }); throw error; }
+    const result = await results.find(job);
+    if (result) {
+      const source = job.sourceProcessingId ? await read(job.sourceProcessingId) : job;
+      const canRerunPlacement = !!job.runBoltDetection && fs.existsSync(path.join(workDir(source), 'artifact.json'))
+        && fs.existsSync(path.join(jobDir(source.id), 'results', 'generated', 'detections.json'));
+      return { ...job, status: 'completed', stage: 'completed', progress: 100, canRerunPlacement };
+    }
+    const state = await processingState(config, job);
+    const stage = state.cancelRequested ? 'cancelling' : ['failed', 'cancelled'].includes(state.status) ? state.status : job.stage;
+    return { ...job, ...state, stage };
   };
   const save = (job) => atomicJSON(path.join(jobDir(job.id), 'job.json'), job);
-  const leaseMs = config.boltWorkerLeaseMs ?? 300000;
-  const heartbeat = (job) => { job.leaseExpiresAt = new Date(Date.now() + leaseMs).toISOString(); };
-  const requireLease = (req, job) => {
-    if (job.status !== 'processing') throw Object.assign(new Error('JOB_NOT_PROCESSING'), { status: 409 });
-    if (!job.leaseToken || req.headers['x-worker-lease'] !== job.leaseToken || Date.parse(job.leaseExpiresAt) <= Date.now())
-      throw Object.assign(new Error('STALE_WORKER_LEASE'), { status: 409 });
-    heartbeat(job);
+  const outputDirFor = (job) => path.join(jobDir(job.id), 'outputs', job.flowRunId);
+  const workDir = (job) => path.join(jobDir(job.id), 'artifacts', job.flowRunId);
+  const requireRun = (req, job) => {
+    if (!job.flowRunId || req.headers['x-processing-run'] !== job.flowRunId || job.status !== 'processing' || job.cancelRequested)
+      throw Object.assign(new Error('PROCESSING_RUN_INACTIVE'), { status: 409 });
   };
-  const release = (job) => { delete job.leaseToken; delete job.leaseExpiresAt; };
-  const cancelled = (job) => {
-    job.status = 'cancelled'; job.stage = 'cancelled'; job.cancelRequested = false;
-    job.completedAt = new Date().toISOString(); release(job);
-  };
-  const completed = (job, result) => {
-    release(job); job.status = 'completed'; job.stage = 'completed'; job.progress = 100;
-    job.completedAt = result.completedAt;
-  };
-  const outputDirFor = (job) => path.join(jobDir(job.id), 'outputs', job.leaseToken);
-  const workDir = (job) => path.join(jobDir(job.id), 'artifacts', job.reconstructionId);
 
   const requireSession = async (req, res, next) => {
     try {
@@ -65,13 +55,16 @@ export function createProcessingRouter(config, auth, { captures, results }) {
     next();
   };
   const summary = (job) => ({
-    id: job.id, runBoltDetection: job.runBoltDetection, name: job.name, status: job.status,
+    id: job.id, sourceProcessingId: job.sourceProcessingId, canRerunPlacement: !!job.canRerunPlacement, runBoltDetection: job.runBoltDetection, name: job.name, status: job.status,
     captureId: job.captureId,
-    engine: job.engine, phase: job.phase,
+    engine: job.engine, boltPlacementMethod: job.boltPlacementMethod ?? 'triangle', phase: job.phase, flowRunId: job.flowRunId,
     createdAt: job.createdAt,
     progress: job.progress || 0, stage: job.stage || job.status,
     ...(Number.isInteger(job.stageCurrent) ? { stageCurrent: job.stageCurrent } : {}),
     ...(Number.isInteger(job.stageTotal) ? { stageTotal: job.stageTotal } : {}),
+    ...(job.stage === 'reconstructing' && job.operation ? { operation: job.operation,
+      operationProgress: job.operationProgress, operationElapsedSeconds: job.operationElapsedSeconds,
+      operationRemainingSeconds: job.operationRemainingSeconds } : {}),
     ...(job.cancelRequested ? { cancelRequested: true } : {}),
     ...(job.entryPath ? { entryPath: job.entryPath } : {}),
     ...(job.error ? { error: job.error } : {})
@@ -88,6 +81,9 @@ export function createProcessingRouter(config, auth, { captures, results }) {
     const engine = req.body?.engine ?? 'odm';
     if (!['odm', 'meshroom', 'realityscan'].includes(engine))
       return res.status(400).json({ code: 'INVALID_RECONSTRUCTION_ENGINE' });
+    const boltPlacementMethod = req.body?.boltPlacementMethod === undefined ? 'triangle' : req.body.boltPlacementMethod;
+    if (!['triangle', 'vertex', 'multiview'].includes(boltPlacementMethod))
+      return res.status(400).json({ code: 'INVALID_BOLT_PLACEMENT_METHOD' });
     const captureId = req.body?.captureId;
     if (req.body?.runBoltDetection !== undefined && typeof req.body.runBoltDetection !== 'boolean')
       return res.status(400).json({ code: 'INVALID_BOLT_DETECTION_OPTION' });
@@ -97,13 +93,49 @@ export function createProcessingRouter(config, auth, { captures, results }) {
     const capture = await captures.metadata(captureId);
     const id = crypto.randomUUID();
     const name = typeof req.body.name === 'string' && req.body.name.trim() ? req.body.name.trim().slice(0, 200) : capture.name;
-    const job = { id, name, engine, runBoltDetection: req.body.runBoltDetection ?? true,
+    const job = { id, name, engine, boltPlacementMethod, runBoltDetection: req.body.runBoltDetection ?? true,
       entryPath: capture.entryPath, captureId: capture.id,
       phase: 'reconstruction', status: 'queued', stage: 'queued', progress: 0,
       createdAt: new Date().toISOString(), error: null };
     await fs.promises.mkdir(jobDir(id), { mode: 0o700 });
-    try { await save(job); }
-    catch (error) { await fs.promises.rm(jobDir(id), { recursive: true, force: true }); throw error; }
+    let run;
+    try {
+      run = await prefect.create(job);
+      job.flowRunId = run.id;
+      await save(job);
+      await prefect.state(run.id, 'SCHEDULED');
+    } catch (error) {
+      if (run) await prefect.state(run.id, 'CANCELLED').catch(() => {});
+      await fs.promises.rm(jobDir(id), { recursive: true, force: true });
+      throw error;
+    }
+    res.status(202).json(summary(job));
+  });
+
+  router.post('/:id/placement', express.json({ limit: '8kb' }), async (req, res) => {
+    const method = req.body?.boltPlacementMethod;
+    if (!['triangle', 'vertex', 'multiview'].includes(method))
+      return res.status(400).json({ code: 'INVALID_BOLT_PLACEMENT_METHOD' });
+    const source = await read(req.params.id);
+    if (source.status !== 'completed' || !source.canRerunPlacement)
+      return res.status(409).json({ code: 'PLACEMENT_SOURCE_UNAVAILABLE' });
+    const job = { id: crypto.randomUUID(), captureId: source.captureId, entryPath: source.entryPath,
+      name: source.name, engine: source.engine, runBoltDetection: true, boltPlacementMethod: method,
+      sourceProcessingId: source.sourceProcessingId || source.id,
+      phase: 'placement', status: 'queued', stage: 'queued', progress: 0,
+      createdAt: new Date().toISOString(), error: null };
+    await fs.promises.mkdir(jobDir(job.id), { mode: 0o700 });
+    let run;
+    try {
+      run = await prefect.create(job);
+      job.flowRunId = run.id;
+      await save(job);
+      await prefect.state(run.id, 'SCHEDULED');
+    } catch (error) {
+      if (run) await prefect.state(run.id, 'CANCELLED').catch(() => {});
+      await fs.promises.rm(jobDir(job.id), { recursive: true, force: true });
+      throw error;
+    }
     res.status(202).json(summary(job));
   });
 
@@ -122,18 +154,9 @@ export function createProcessingRouter(config, auth, { captures, results }) {
   router.post('/:id/cancel', async (req, res) => {
     const job = await read(req.params.id);
     if (job.status === 'cancelled') return res.json(summary(job));
-    if (job.status === 'queued') {
-      job.status = 'cancelled';
-      job.stage = 'cancelled';
-      job.completedAt = new Date().toISOString();
-      await save(job);
-      return res.json(summary(job));
-    }
-    if (job.status === 'processing') {
-      job.cancelRequested = true;
-      job.stage = 'cancelling';
-      await save(job);
-      return res.status(202).json(summary(job));
+    if (['queued', 'processing'].includes(job.status)) {
+      await prefect.state(job.flowRunId, job.status === 'queued' ? 'CANCELLED' : 'CANCELLING');
+      return res.status(job.status === 'queued' ? 200 : 202).json(summary(await read(job.id)));
     }
     res.status(409).json({ code: 'JOB_NOT_CANCELLABLE' });
   });
@@ -156,99 +179,49 @@ export function createProcessingRouter(config, auth, { captures, results }) {
   router.delete('/:id', async (req, res) => {
     const job = await read(req.params.id);
     if (!['completed', 'failed', 'cancelled'].includes(job.status)) return res.status(409).json({ code: 'JOB_IN_USE' });
+    const entries = await fs.promises.readdir(directory, { withFileTypes: true });
+    for (const entry of entries.filter(item => item.isDirectory() && uuid.test(item.name))) {
+      const dependent = JSON.parse(await fs.promises.readFile(path.join(jobDir(entry.name), 'job.json'), 'utf8'));
+      if (dependent.sourceProcessingId === job.id)
+        return res.status(409).json({ code: 'PLACEMENT_SOURCE_IN_USE' });
+    }
     await fs.promises.rm(jobDir(job.id), { recursive: true, force: true });
     res.sendStatus(204);
   });
 
-  router.get('/worker/next', async (req, res) => {
-    const { role, engine } = req.query;
-    if (!['reconstruction', 'detection'].includes(role) ||
-        (role === 'reconstruction' && !['odm', 'meshroom', 'realityscan'].includes(engine)))
-      return res.status(400).json({ code: 'INVALID_WORKER_ROLE' });
-    const entries = await fs.promises.readdir(directory, { withFileTypes: true });
-    const jobs = [];
-    for (const entry of entries.filter((item) => item.isDirectory() && uuid.test(item.name))) {
-      const job = await read(entry.name);
-      if (job.status === 'processing' && (!job.leaseExpiresAt || Date.parse(job.leaseExpiresAt) <= Date.now())) {
-        if (job.cancelRequested) cancelled(job);
-        else { job.status = 'queued'; job.stage = 'queued'; release(job); }
-        await save(job);
-      }
-      if (job.status === 'queued' && job.phase === role &&
-          (role === 'detection' || job.engine === engine)) jobs.push(job);
-    }
-    jobs.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
-    const job = jobs[0];
-    if (!job) return res.status(204).end();
-    if (job.phase === 'reconstruction') job.reconstructionId = crypto.randomUUID();
-    job.status = 'processing'; job.stage = 'starting'; job.progress = 0;
-    delete job.stageCurrent; delete job.stageTotal;
-    job.startedAt = new Date().toISOString();
-    job.leaseToken = crypto.randomUUID(); heartbeat(job);
-    await fs.promises.mkdir(workDir(job), { recursive: true, mode: 0o700 });
-    await save(job);
-    res.json({ ...summary(job), leaseToken: job.leaseToken, leaseExpiresAt: job.leaseExpiresAt,
-      inputPath: captures.filesPath(job.captureId), workPath: workDir(job),
-      outputAbsolutePath: outputDirFor(job) });
-  });
-
   router.get('/worker/:id', async (req, res) => {
     const job = await read(req.params.id);
-    requireLease(req, job); await save(job);
-    res.json({ status: job.status, phase: job.phase, cancelRequested: Boolean(job.cancelRequested) });
-  });
-
-  router.post('/worker/:id/reconstructed', express.json({ limit: '8kb' }), async (req, res) => {
-    const job = await read(req.params.id);
-    requireLease(req, job);
-    if (job.phase !== 'reconstruction' || job.runBoltDetection === false) return res.status(409).json({ code: 'INVALID_JOB_PHASE' });
-    if (job.cancelRequested) { cancelled(job); await save(job); return res.json(summary(job)); }
-    try {
-      const base = await fs.promises.realpath(workDir(job));
-      const manifestFile = await fs.promises.realpath(path.join(base, 'artifact.json'));
-      if (!manifestFile.startsWith(base + path.sep)) throw new Error('INVALID_ARTIFACT_PATH');
-      const artifact = JSON.parse(await fs.promises.readFile(manifestFile, 'utf8'));
-      if (artifact.version !== 1 || artifact.engine !== job.engine) throw new Error('INVALID_ARTIFACT_MANIFEST');
-      if (!artifact.names || typeof artifact.names !== 'object' || Array.isArray(artifact.names) ||
-          !Object.values(artifact.names).every((name) => typeof name === 'string') ||
-          !['Y_UP', 'Z_UP'].includes(artifact.coordinateSystem)) throw new Error('INVALID_ARTIFACT_MANIFEST');
-      for (const key of ['model', 'reconstruction', 'detectionMesh']) {
-        const relative = relativePath(artifact[key]);
-        const filename = await fs.promises.realpath(path.resolve(base, relative));
-        if (!filename.startsWith(base + path.sep) || !(await fs.promises.stat(filename)).isFile()) throw new Error('INVALID_ARTIFACT_PATH');
-      }
-      if (artifact.images !== undefined) {
-        const images = await fs.promises.realpath(path.resolve(base, relativePath(artifact.images)));
-        if (!images.startsWith(base + path.sep) || !(await fs.promises.stat(images)).isDirectory())
-          throw new Error('INVALID_ARTIFACT_PATH');
-      }
-    } catch { return res.status(400).json({ code: 'INVALID_RECONSTRUCTION_ARTIFACT' }); }
-    job.status = 'queued'; job.phase = 'detection'; job.stage = 'queued'; job.progress = 0;
-    delete job.stageCurrent; delete job.stageTotal;
-    release(job); await save(job);
-    res.json(summary(job));
-  });
-
-  router.post('/worker/:id/cancelled', express.json({ limit: '8kb' }), async (req, res) => {
-    const job = await read(req.params.id);
-    requireLease(req, job);
-    cancelled(job);
-    await save(job);
-    res.json(summary(job));
+    requireRun(req, job);
+    await fs.promises.mkdir(workDir(job), { recursive: true, mode: 0o700 });
+    const source = job.sourceProcessingId ? await read(job.sourceProcessingId) : null;
+    res.json({ ...summary(job), ...(source ? {
+      sourceWorkPath: workDir(source),
+      detectionsPath: path.join(jobDir(source.id), 'results', 'generated', 'detections.json')
+    } : {}), inputPath: captures.filesPath(job.captureId),
+      workPath: workDir(job), outputAbsolutePath: outputDirFor(job) });
   });
 
   router.post('/worker/:id/progress', express.json({ limit: '8kb' }), async (req, res) => {
     const job = await read(req.params.id);
-    requireLease(req, job);
+    requireRun(req, job);
     const progress = Number(req.body?.progress);
-    const stages = new Set(['starting', 'preparing', 'uploading_to_odm', 'reconstructing', 'downloading', 'detecting', 'finalizing']);
+    const stages = new Set(['starting', 'preparing', 'uploading_to_odm', 'reconstructing', 'downloading', 'detecting', 'positioning', 'finalizing']);
     if (!Number.isFinite(progress) || progress < 0 || progress > 100 || !stages.has(req.body?.stage))
       return res.status(400).json({ code: 'INVALID_PROGRESS' });
     job.progress = Math.max(job.progress || 0, Math.round(progress));
-    job.stage = job.cancelRequested ? 'cancelling' : req.body.stage;
+    job.stage = req.body.stage;
+    if (req.body.stage === 'detecting') job.phase = 'detection';
     for (const key of ['stageCurrent', 'stageTotal']) {
       const value = Number(req.body?.[key]);
       if (Number.isInteger(value) && value >= 0) job[key] = value;
+      else delete job[key];
+    }
+    for (const key of ['operation', 'operationProgress', 'operationElapsedSeconds', 'operationRemainingSeconds']) {
+      const value = req.body?.[key];
+      const valid = req.body.stage === 'reconstructing' && (key === 'operation'
+        ? typeof value === 'string' && value.length > 0 && value.length <= 120
+        : Number.isFinite(value) && value >= 0 && (key !== 'operationProgress' || value <= 100));
+      if (valid) job[key] = value;
       else delete job[key];
     }
     await save(job);
@@ -257,40 +230,13 @@ export function createProcessingRouter(config, auth, { captures, results }) {
 
   router.post('/worker/:id/complete', express.json({ limit: '8kb' }), async (req, res) => {
     const job = await read(req.params.id);
-    requireLease(req, job);
-    if (job.phase !== 'detection' && !(job.phase === 'reconstruction' && job.runBoltDetection === false)) return res.status(409).json({ code: 'INVALID_JOB_PHASE' });
-    if (job.cancelRequested) {
-      cancelled(job); await save(job); return res.json(summary(job));
-    }
+    requireRun(req, job);
     try {
-      const result = await results.importResult(job, outputDirFor(job));
-      completed(job, result);
-      await save(job);
-      res.json(summary(job));
+      await results.importResult(job, outputDirFor(job));
+      res.json(summary(await read(job.id)));
     } catch (error) {
       res.status(error.status || 500).json({ code: 'JOB_FINALIZATION_FAILED', message: error.message });
     }
-  });
-
-  router.post('/worker/:id/fail', express.json({ limit: '8kb' }), async (req, res) => {
-    const job = await read(req.params.id);
-    requireLease(req, job);
-    if (job.cancelRequested) {
-      job.status = 'cancelled';
-      job.stage = 'cancelled';
-      job.cancelRequested = false;
-      release(job);
-      job.completedAt = new Date().toISOString();
-      await save(job);
-      return res.json(summary(job));
-    }
-    release(job);
-    job.status = 'failed';
-    job.stage = 'failed';
-    job.error = typeof req.body?.error === 'string' ? req.body.error.slice(0, 1000) : 'Processing failed.';
-    job.completedAt = new Date().toISOString();
-    await save(job);
-    res.json(summary(job));
   });
 
   router.use((error, req, res, next) => {

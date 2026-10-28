@@ -8,6 +8,7 @@
   ],
   "scripts": {
     "start": "node index.js",
+    "workers:restart": "node scripts/restart-workers.mjs",
     "test": "node --test tests/*.test.js",
     "create-user": "node scripts/create-user.js"
   },

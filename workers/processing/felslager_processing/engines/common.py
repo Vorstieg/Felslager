@@ -10,7 +10,8 @@ from ..errors import ReconstructionError
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"}
 
 
-def run_batch(command: list[str], log: Path, check_cancelled: Callable[[], None]) -> None:
+def run_batch(command: list[str], log: Path, check_cancelled: Callable[[], None],
+              poll: Callable[[], None] | None = None) -> None:
     """Terminate the entire Meshroom/AliceVision process group on cancellation."""
     check_cancelled()
     with log.open("wb") as stream:
@@ -19,9 +20,13 @@ def run_batch(command: list[str], log: Path, check_cancelled: Callable[[], None]
             while True:
                 try:
                     code = process.wait(timeout=2)
+                    if poll:
+                        poll()
                     break
                 except subprocess.TimeoutExpired:
                     check_cancelled()
+                    if poll:
+                        poll()
             check_cancelled()
         finally:
             # Meshroom launches subprocesses; kill the group even if its leader

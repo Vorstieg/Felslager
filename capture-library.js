@@ -1,4 +1,5 @@
 import express from 'express';
+import { processingState } from './prefect.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -52,7 +53,9 @@ export function createCaptureLibrary(config) {
     const matches = [];
     for (const entry of entries.filter((e) => e.isDirectory() && uuid.test(e.name))) {
       const job = JSON.parse(await fs.promises.readFile(path.join(jobs, entry.name, 'job.json'), 'utf8'));
-      if (job.captureId === id && !['completed', 'failed', 'cancelled'].includes(job.status)) matches.push(job.id);
+      if (job.captureId !== id) continue;
+      if (fs.existsSync(path.join(jobs, entry.name, 'results', 'result.json'))) continue;
+      if (!['completed', 'failed', 'cancelled'].includes((await processingState(config, job)).status)) matches.push(job.id);
     }
     return matches;
   };

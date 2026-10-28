@@ -47,9 +47,6 @@ test("configuration requires a persistent private database and explicit trusted 
     { trustedOrigins: ["https://other.example.test"] },
     { baseURL: "http://lager.example.test/api/auth" },
     { baseURL: "https://localhost/api/auth" },
-    { boltWorkerLeaseMs: 0 },
-    { boltWorkerLeaseMs: NaN },
-    { boltWorkerLeaseMs: Infinity },
   ])
     assert.throws(
       () => validateConfig({ ...config(), ...patch }),
@@ -57,16 +54,10 @@ test("configuration requires a persistent private database and explicit trusted 
     );
 });
 
-test("worker lease duration defaults to five minutes and accepts a configured timeout", () => {
-  const env = {
-    BETTER_AUTH_SECRET: config().secret,
-    AUTH_DATABASE_PATH: config().databasePath,
-  };
-  assert.equal(loadConfig(env).boltWorkerLeaseMs, 300_000);
-  assert.equal(loadConfig({ ...env, BOLT_WORKER_LEASE_SECONDS: "60" }).boltWorkerLeaseMs, 60_000);
-  for (const value of ["0", "-1", "invalid", "Infinity"]) {
-    assert.throws(() => loadConfig({ ...env, BOLT_WORKER_LEASE_SECONDS: value }), /BOLT_WORKER_LEASE_SECONDS/);
-  }
+test("Prefect API defaults to the local server and accepts another address", () => {
+  const env = { BETTER_AUTH_SECRET: config().secret, AUTH_DATABASE_PATH: config().databasePath };
+  assert.equal(loadConfig(env).prefectApiUrl, 'http://127.0.0.1:4200/api');
+  assert.equal(loadConfig({ ...env, PREFECT_API_URL: 'http://prefect:4200/api' }).prefectApiUrl, 'http://prefect:4200/api');
 });
 
 test("startup requires an auth secret and database but no SMTP", () => {
