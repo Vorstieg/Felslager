@@ -10,6 +10,7 @@ export function loadConfig(env = process.env) {
   const config = {
     production,
     port: Number(env.PORT || 3001),
+    requestTimeoutMs: Number(env.HTTP_REQUEST_TIMEOUT_MS ?? 6 * 60 * 60 * 1000),
     dataDir: path.resolve(
       env.DATA_DIR || fileURLToPath(new URL("./data", import.meta.url)),
     ),
@@ -34,6 +35,9 @@ export function loadConfig(env = process.env) {
   return config;
 }
 export function validateConfig(c) {
+  if (c.requestTimeoutMs !== undefined &&
+      (!Number.isSafeInteger(c.requestTimeoutMs) || c.requestTimeoutMs < 60000))
+    throw new Error("HTTP_REQUEST_TIMEOUT_MS must be a safe integer of at least 60000");
   if (c.captureMaxFileBytes !== undefined && (!Number.isSafeInteger(c.captureMaxFileBytes) || c.captureMaxFileBytes < 1))
     throw new Error("CAPTURE_MAX_FILE_BYTES must be a positive safe integer");
   if (c.captureMaxDatasetBytes !== undefined &&
