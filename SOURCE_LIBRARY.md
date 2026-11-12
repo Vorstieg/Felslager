@@ -39,7 +39,18 @@ Uploads accept any filename extension and content type. Workers process these me
 
 Defaults: 10,000 uploaded files, 20 GiB per file (`CAPTURE_MAX_FILE_BYTES`),
 100 GiB per capture (`CAPTURE_MAX_DATASET_BYTES`). Configure reverse-proxy request limits and timeouts
-for video uploads. Traversal, hidden path components and symlink paths are rejected.
+for video uploads. The HTTP server allows six hours to receive the entire request
+(`HTTP_REQUEST_TIMEOUT_MS=21600000`, minimum 60000 ms), while headers must arrive
+within 60 seconds. Restart the API after changing this setting.
+Node's default five-minute request timeout is too short for multi-GB uploads.
+A reverse proxy can still interrupt uploads earlier: its body size limit must
+allow `CAPTURE_MAX_FILE_BYTES`, and its upstream send/read timeouts must accommodate
+the transfer. For nginx, check `client_max_body_size`, `client_body_timeout`,
+`proxy_send_timeout`, `proxy_read_timeout`, and available temporary disk space
+when request buffering is enabled. An HTTP/2 protocol error alone does not identify
+which layer closed the connection; check proxy and API logs for 408/413/499/502/504
+responses and compare elapsed time with configured timeouts.
+Traversal, hidden path components and symlink paths are rejected.
 Workers decode supported media during processing and ignore other file types.
 
 Captures and processing data are kept indefinitely until explicitly deleted.

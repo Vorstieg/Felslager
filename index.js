@@ -11,6 +11,7 @@ import { promisify } from 'node:util';
 import { toNodeHandler, fromNodeHeaders } from 'better-auth/node';
 import { createAuth } from './auth.js';
 import { loadConfig } from './config.js';
+import { createHttpServer } from './http-server.js';
 import { createReviewRouter } from './reviews.js';
 import { createSearchIndexer } from './search.js';
 import { createProcessingRouter } from './processing.js';
@@ -445,7 +446,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
             .then((key) => console.log(`[Felslager] Public Meilisearch search key: ${key}`))
             .catch((e) => console.warn(`[Felslager] Could not ensure Meilisearch search key: ${e.message}`));
     else console.log('[Felslager] MEILI_URL not set: search sync disabled.');
-    const server = service.app.listen(config.port, () =>
+    const server = createHttpServer(service.app, config).listen(config.port, () =>
         console.log(`Felslager listening on ${config.port}`)
     );
     for (const signal of ['SIGINT', 'SIGTERM'])
