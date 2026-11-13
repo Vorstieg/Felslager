@@ -1,14 +1,17 @@
 """Prepare photos, video frames and telemetry from an original capture."""
 import hashlib
 import json
+import logging
 from pathlib import Path
 
 from . import api as client
 from .artifacts import artifact_path
 from .errors import ReconstructionError
 from .engines.common import IMAGE_EXTENSIONS, run_batch
+from .telemetry import geotag_frames
 
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"}
+LOG = logging.getLogger("felslager-worker")
 
 
 def prepare_capture(job: dict, source: Path, work: Path) -> Path:
@@ -52,7 +55,7 @@ def prepare_capture(job: dict, source: Path, work: Path) -> Path:
         duration = ["-t", str(end - start)] if end is not None else []
         try:
             run_batch(["ffmpeg", "-nostdin", "-v", "error", *trim, "-i", str(original), *duration,
-                       "-vf", f"fps={1 / interval:g}", "-frames:v", "10001", "-q:v", "2", str(directory / "%06d.jpg")],
+                       "-vf", f"fps={1 / interval:g}:start_time=0:round=up", "-frames:v", "10001", "-q:v", "2", str(directory / "%06d.jpg")],
                       work / f"video-{key}.log", lambda: client.check_cancelled(job["id"]))
         except ReconstructionError as error:
             raise ReconstructionError(f"Could not extract frames from {name}. Check FFmpeg codec support and the video file.") from error
@@ -61,6 +64,14 @@ def prepare_capture(job: dict, source: Path, work: Path) -> Path:
             raise ReconstructionError(f"Video contains no usable frames: {name}")
         if len(extracted) + len(images) + frame_count > 10000:
             raise ReconstructionError("Capture exceeds the 10,000 prepared image limit")
+        matches = [subtitle for _, subtitle in subtitles
+                   if subtitle.parent == original.parent and subtitle.stem.casefold() == original.stem.casefold()]
+        if len(matches) > 1:
+            raise ReconstructionError(f"Multiple matching SRT files for video: {name}")
+        if matches:
+            geotag_frames(extracted, matches[0], start, interval, lambda: client.check_cancelled(job["id"]))
+        else:
+            LOG.warning("No matching SRT file for %s; extracted frames have no GPS tags", name)
         frame_count += len(extracted)
     if len(images) + frame_count < 2:
         raise ReconstructionError("At least two images or video frames are required")

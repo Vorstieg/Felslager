@@ -181,6 +181,10 @@ def test_odm_init_is_multipart_and_requests_cameras_and_mesh(worker, monkeypatch
     options = {o["name"]: o["value"] for o in json.loads(fields["options"][1])}
     assert options["gltf"] is True and options["mesh-size"] == size
     assert options["mesh-octree-depth"] == depth
+    assert options["max-concurrency"] == "1"
+    assert options["use-3dmesh"] is True
+    assert options["skip-orthophoto"] is True
+    assert options["fast-orthophoto"] is False
     assert result.names == {"a.jpg": "image_000000.jpg", "b.jpg": "image_000001.jpg"}
 
 
@@ -587,4 +591,4 @@ def test_video_options_control_extraction_and_exclusions(monkeypatch, tmp_path):
     command = commands[0]
     assert command[command.index('-ss') + 1] == '5'
     assert command[command.index('-t') + 1] == '10'
-    assert command[command.index('-vf') + 1] == 'fps=0.5'
+    assert command[command.index('-vf') + 1] == 'fps=0.5:start_time=0:round=up'

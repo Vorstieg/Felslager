@@ -39,6 +39,10 @@ def reconstruct(images: Path, out: Path, check_cancelled, progress, options=None
     options = json.dumps([
         {"name": "gltf", "value": True},
         {"name": "fast-orthophoto", "value": False},
+        # A cliff needs the full 3D model, not a terrain raster/2.5D mesh.
+        {"name": "use-3dmesh", "value": True},
+        {"name": "skip-orthophoto", "value": True},
+        {"name": "max-concurrency", "value": "1"},
         {"name": "mesh-size", "value": str(mesh_size)},
         {"name": "mesh-octree-depth", "value": str(depth)},
     ])
