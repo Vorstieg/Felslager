@@ -12,6 +12,7 @@ import { toNodeHandler, fromNodeHeaders } from 'better-auth/node';
 import { createAuth } from './auth.js';
 import { loadConfig } from './config.js';
 import { createHttpServer } from './http-server.js';
+import { createTileRouter } from './tiles.js';
 import { createReviewRouter } from './reviews.js';
 import { createSearchIndexer } from './search.js';
 import { createProcessingRouter } from './processing.js';
@@ -178,6 +179,7 @@ export function createApp(config, { optimizeGlb, searchFetch } = {}) {
     const app = express();
     app.disable('x-powered-by');
     app.set('trust proxy', config.trustProxy || false);
+    app.use('/api/tiles', createTileRouter(config));
     app.use((req, res, next) => {
         const publicRead = req.path.startsWith('/api/fs') && ['GET', 'HEAD'].includes(req.method);
         const origin = req.headers.origin;

@@ -3223,6 +3223,85 @@
           }
         ]
       }
+    },
+    "/api/tiles/via-ferrata.pmtiles": {
+      "get": {
+        "summary": "Read the public via ferrata and hiking difficulty PMTiles archive",
+        "security": [],
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Range",
+            "schema": {
+              "type": "string"
+            },
+            "example": "bytes=0-126"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Complete archive",
+            "content": {
+              "application/vnd.pmtiles": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "206": {
+            "description": "Requested bytes; Content-Range gives the returned interval",
+            "content": {
+              "application/vnd.pmtiles": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "Archive unchanged"
+          },
+          "404": {
+            "description": "Archive has not been generated"
+          },
+          "416": {
+            "description": "Unsatisfiable byte range; Content-Range gives archive size"
+          }
+        }
+      },
+      "head": {
+        "summary": "Read archive size and cache/range headers without a body",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Archive headers"
+          },
+          "206": {
+            "description": "Range headers"
+          },
+          "304": {
+            "description": "Archive unchanged"
+          },
+          "404": {
+            "description": "Archive missing"
+          },
+          "416": {
+            "description": "Unsatisfiable range"
+          }
+        }
+      },
+      "options": {
+        "summary": "Public CORS preflight for archive reads",
+        "security": [],
+        "responses": {
+          "204": {
+            "description": "GET, HEAD and Range requests are allowed from any origin"
+          }
+        }
+      }
     }
   },
   "components": {

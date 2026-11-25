@@ -1,0 +1,23 @@
+{
+  "layers": {
+    "via_ferrata": {
+      "minzoom": 10,
+      "maxzoom": 14
+    },
+    "hiking_difficulty": {
+      "minzoom": 10,
+      "maxzoom": 14
+    }
+  },
+  "settings": {
+    "minzoom": 10,
+    "maxzoom": 14,
+    "basezoom": 14,
+    "include_ids": true,
+    "compress": "gzip",
+    "name": "Felsverzeichnis via ferrata",
+    "version": "1.0.0",
+    "description": "OSM via ferrata and hiking difficulty in Austria",
+    "attribution": "\u00a9 OpenStreetMap contributors"
+  }
+}

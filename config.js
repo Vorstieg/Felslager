@@ -15,6 +15,7 @@ export function loadConfig(env = process.env) {
       env.DATA_DIR || fileURLToPath(new URL("./data", import.meta.url)),
     ),
     databasePath: env.AUTH_DATABASE_PATH,
+    tilesDir: env.TILES_DIR ? path.resolve(env.TILES_DIR) : undefined,
     reviewDir: env.REVIEW_DIR ? path.resolve(env.REVIEW_DIR) : undefined,
     processingDir: env.PROCESSING_DIR ? path.resolve(env.PROCESSING_DIR) : undefined,
     captureDir: env.CAPTURE_DIR ? path.resolve(env.CAPTURE_DIR) : undefined,
